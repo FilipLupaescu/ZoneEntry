@@ -1,0 +1,35 @@
+name: Build Windows app
+
+# Builds ZoneEntry.exe on a real Windows machine hosted by GitHub, so you can
+# develop on a Mac and still get a native Windows executable.
+# Runs on every push to main, or manually from the "Actions" tab.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller pytest
+
+      - name: Run tests (logic + Excel layout)
+        run: python -m pytest -q
+
+      - name: Build ZoneEntry.exe
+        run: pyinstaller --onefile --windowed --name ZoneEntry app.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ZoneEntry-windows
+          path: dist/ZoneEntry.exe
+          if-no-files-found: error
