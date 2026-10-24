@@ -52,7 +52,7 @@ A test (`tests/test_zonelogic.py::test_export_matches_original_layout`) re-expor
 
 ---
 
-## Run it on your Mac
+## Run it on Mac
 
 ```bash
 cd ZoneEntry
@@ -122,9 +122,3 @@ build_windows.bat   same build, on a Windows PC
 ```
 
 GUI test (needs a display): `ZONEENTRY_GUI_TESTS=1 python -m pytest tests/test_gui_smoke.py`
-
-## Ideas for later
-* Suggest the *next* Store Zone from your usual walking order
-* Several stores in one file (one sheet each)
-* German UI labels
-* Code-signing the exe to get rid of the SmartScreen warning
