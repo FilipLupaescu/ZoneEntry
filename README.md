@@ -1,7 +1,7 @@
 # ZoneEntry
 
 Fast keyboard-driven entry of **Store Zones → Inventory Zone ranges** for store inventory counts,
-with one-click export to Excel in your `ZoneUpdate.xlsx` layout (`from | to | Division`).
+with one-click export to Excel in `ZoneUpdate.xlsx` layout (`from | to | Division`).
 
 Develop on macOS, ship a native Windows `.exe`. Python + Tkinter (ships with Python) + openpyxl, nothing else.
 
@@ -32,7 +32,7 @@ So a normal row is: `kas` ⏎ `42` ⏎ — nothing else.
 * **Edit** a row: double-click it, or select + `F2` / `Enter`. Enter saves, Esc cancels.
 * **Delete** with the Delete key, **Undo** with Ctrl+Z (Cmd+Z on Mac), up to 200 steps.
 * **Autosave:** every change is saved. Close the window or crash, reopen, and your list is back.
-* The same Store Zone can appear in several rows (your sheet has `Holz` three times).
+* The same Store Zone can appear in several rows.
 
 ### Other buttons
 * **Import…** loads an existing `from | to | Division` sheet (e.g. last time's file) so you can continue it. Unknown zone names are added to your list.
