@@ -20,9 +20,9 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
@@ -79,7 +79,7 @@ jobs:
           $files | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content SHA256SUMS.txt
           Get-Content SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v4
         with:
           name: ZoneEntry-installer
           path: |
@@ -87,7 +87,7 @@ jobs:
             dist/SHA256SUMS.txt
           if-no-files-found: warn
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v4
         with:
           name: ZoneEntry-portable
           path: dist/ZoneEntry-portable.zip

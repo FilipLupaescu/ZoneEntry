@@ -548,3 +548,24 @@ def test_screenshot_help_popup(app, tmp_path):
     out_dir = Path(os.environ.get("ZONEENTRY_SHOTS", tmp_path))
     out_dir.mkdir(parents=True, exist_ok=True)
     img.save(out_dir / "shot-help.png")
+
+
+# ================================================================ new store (day 2)
+def test_new_store_clears_rows_and_name_and_warns_until_exported(app, tmp_path, monkeypatch):
+    messages = []
+    app.ask = lambda kind, title, msg, default_yes=True: messages.append(msg) or True
+    app.store.set("Hornbach Köln")
+    add_row(app, "Kassen", "10", start="1")
+    assert len(app.entries) == 1
+
+    app.new_list()  # not exported yet -> the dialog carries the warning
+    assert tr("dlg.new.unexported").strip() in messages[-1]
+    assert app.entries == [] and app.store.get() == ""
+
+    app.undo()  # rows come back
+    assert len(app.entries) == 1
+    monkeypatch.setattr(appmod.filedialog, "asksaveasfilename", lambda **k: str(tmp_path / "x.xlsx"))
+    app.export()
+    app.new_list()  # exported -> no warning
+    assert tr("dlg.new.unexported").strip() not in messages[-1]
+    assert app.entries == []

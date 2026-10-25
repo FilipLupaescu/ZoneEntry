@@ -77,7 +77,7 @@ So a typical row is just: `kas` ⏎ `42` ⏎
 |---|---|
 | **Import…** | Load an earlier `from / to / Division` Excel file and carry on where you stopped |
 | **Zone list…** | Add or remove Store Zone names (one per line) |
-| **New list** | Clear the rows for the next store (you can still undo) |
+| **New store** | Clear all rows and the store name for the next store. Warns if you have not exported yet; you can still undo |
 | **🌐 Language** | Choose the language of the program |
 | **?** | Hover for a quick guide with all hotkeys. Click it (or press F1) to keep it open |
 | **Edit / Delete / Undo** | Fix mistakes. Or double-click a row to edit it |
@@ -148,7 +148,7 @@ The suggested file name is `ZoneUpdate_<store name>_<date>.xlsx`.
 | *"…can't be written. Is it open in Excel?"* when exporting | Close the Excel file with that name, or export under another name. |
 | *"'xyz' is not in the Store Zone list"* | Check the spelling, or add the zone via **Zone list…**. |
 | Start Zone is empty | It is the first row (type it yourself), or the previous End was 9999. |
-| I cleared the list by mistake | Press **Ctrl+Z**. Undo also brings back a list cleared with **New list** or replaced by **Import…** |
+| I cleared the list by mistake | Press **Ctrl+Z**. Undo also brings back a list cleared with **New store** or replaced by **Import…** |
 | The window looks cut off on a small screen | Maximise it. ZoneEntry adapts to screens as small as 1366 × 768. |
 | Wrong language | Click the globe button and choose another one. |
 | Slow to start on an old PC | Use the installer (not the zip on a network drive or USB stick), and ask IT to exclude the install folder from real-time virus scanning. |
@@ -244,9 +244,10 @@ To build on your own PC instead, install Python 3.12 (and optionally [Inno Setup
 
 ---
 
-## What's new in 1.1.0
+## What's new in 1.1.1 (and 1.1.0)
 
 * Language button with five languages; the whole interface is translated
+* "New store" button for the next day (warns if the count was not exported)
 * Hover guide with all hotkeys (the **?** button, or F1)
 * Installer for Windows (per user, no admin rights) plus a portable zip
 * Faster on older PCs: quicker start, instant row entry even with many rows, no disk writes while typing

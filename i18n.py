@@ -43,7 +43,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "store.label": _t("Store / location:", "Magazin / locație:", "Üzlet / helyszín:", "Sklep / lokalizacja:", "Markt / Standort:"),
     "btn.import": _t("Import…", "Importă…", "Importálás…", "Importuj…", "Importieren…"),
     "btn.zonelist": _t("Zone list…", "Lista zonelor…", "Zónalista…", "Lista stref…", "Zonenliste…"),
-    "btn.new": _t("New list", "Listă nouă", "Új lista", "Nowa lista", "Neue Liste"),
+    "btn.new": _t("New store", "Magazin nou", "Új üzlet", "Nowy sklep", "Neuer Markt"),
     "box.title": _t("New entry", "Intrare nouă", "Új tétel", "Nowy wpis", "Neuer Eintrag"),
     "lbl.store_zone": _t("Store Zone", "Zonă magazin", "Üzletzóna", "Strefa sklepu", "Marktzone"),
     "lbl.start": _t("Start Zone", "Zonă de start", "Kezdőzóna", "Strefa początkowa", "Startzone"),
@@ -142,11 +142,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "Nothing to undo.", "Nimic de anulat.", "Nincs mit visszavonni.", "Nie ma czego cofać.", "Nichts rückgängig zu machen."
     ),
     "status.newlist": _t(
-        "New list. Enter the store name, then the first Store Zone.",
-        "Listă nouă. Introdu numele magazinului, apoi prima zonă de magazin.",
-        "Új lista. Add meg az üzlet nevét, majd az első üzletzónát.",
-        "Nowa lista. Wpisz nazwę sklepu, a potem pierwszą strefę sklepu.",
-        "Neue Liste. Marktnamen eingeben, dann die erste Marktzone.",
+        "New store. Enter the store name, then the first Store Zone.",
+        "Magazin nou. Introdu numele magazinului, apoi prima zonă de magazin.",
+        "Új üzlet. Add meg az üzlet nevét, majd az első üzletzónát.",
+        "Nowy sklep. Wpisz nazwę sklepu, a potem pierwszą strefę sklepu.",
+        "Neuer Markt. Marktnamen eingeben, dann die erste Marktzone.",
     ),
     "status.zones_saved": _t(
         "Zone list saved ({n} zones).",
@@ -285,7 +285,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "{start}–{end} nakłada się na wiersz {n}:\n\n    {label}\n\nDodać mimo to?",
         "{start}–{end} überschneidet sich mit Zeile {n}:\n\n    {label}\n\nTrotzdem hinzufügen?",
     ),
-    "dlg.new.title": _t("New list", "Listă nouă", "Új lista", "Nowa lista", "Neue Liste"),
+    "dlg.new.title": _t("New store", "Magazin nou", "Új üzlet", "Nowy sklep", "Neuer Markt"),
+    "dlg.new.unexported": _t(
+        "\n\nWARNING: these rows have not been exported to Excel yet!",
+        "\n\nATENȚIE: aceste rânduri nu au fost încă exportate în Excel!",
+        "\n\nFIGYELEM: ezeket a sorokat még nem exportáltad Excelbe!",
+        "\n\nUWAGA: te wiersze nie zostały jeszcze wyeksportowane do Excela!",
+        "\n\nACHTUNG: Diese Zeilen wurden noch nicht nach Excel exportiert!",
+    ),
     "dlg.new.msg": _t(
         "Clear all {n} rows and start a new store?\n(You can still undo with {key}.)",
         "Ștergi toate cele {n} rânduri și începi un magazin nou?\n(Poți anula cu {key}.)",

@@ -68,6 +68,7 @@ class App(tk.Tk):
         self.zones: list[str] = zl.load_zones(self.data_dir)
         session = zl.load_session(self.data_dir)
         self.entries: list[zl.Entry] = session["entries"]
+        self._exported: list[zl.Entry] = []  # rows as of the last Excel export (for the "not exported yet" warning)
         self.last_dir: str = session["last_dir"]
         self.history: list[list[zl.Entry]] = []
         self.edit_index: int | None = None
@@ -549,13 +550,12 @@ class App(tk.Tk):
         self.schedule_save()
 
     def new_list(self) -> None:
-        if self.entries and not self.ask(
-            "yesno",
-            tr("dlg.new.title"),
-            tr("dlg.new.msg", n=len(self.entries), key=f"{self.ctrl_name()}+Z"),
-            default_yes=False,
-        ):
-            return
+        if self.entries:
+            msg = tr("dlg.new.msg", n=len(self.entries), key=f"{self.ctrl_name()}+Z")
+            if self.entries != self._exported:
+                msg += tr("dlg.new.unexported")
+            if not self.ask("yesno", tr("dlg.new.title"), msg, default_yes=False):
+                return
         if self.entries:
             self._push_history()
         self.entries = []
@@ -615,6 +615,7 @@ class App(tk.Tk):
             self.ask("error", tr("dlg.cantsave.title"), str(exc))
             return
         self.last_dir = os.path.dirname(path)
+        self._exported = list(self.entries)
         self.flush_session()
         self.info("status.exported", n=len(self.entries), path=path)
 
