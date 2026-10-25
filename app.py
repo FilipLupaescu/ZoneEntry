@@ -6,7 +6,7 @@ Keyboard flow for one row (never needs the mouse):
     End Zone:   type the number     ->  Enter   (row is added)
     ...the Start Zone was already filled in with previous End + 1.
 
-Run:  python app.py
+Run:  python app.py            (add --selftest to start, check and quit)
 """
 from __future__ import annotations
 
@@ -14,16 +14,25 @@ import os
 import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 from tkinter import font as tkfont
 
+import i18n
 import zonelogic as zl
-
-__version__ = "1.0.0"
+from i18n import LANGUAGES, tr
+from version import __version__
+from widgets import (
+    AutocompleteEntry,
+    HelpPopup,
+    ZoneListDialog,
+    ZoneNumberEntry,
+    ask as ask_dialog,
+    load_globe,
+)
 
 MOD = "Command" if sys.platform == "darwin" else "Control"
-MODNAME = "Cmd" if sys.platform == "darwin" else "Ctrl"
 ERROR_FG = "#c62828"
+SAVE_DELAY_MS = 700  # autosave is batched: typing never waits for the disk
 
 
 def enable_hidpi() -> None:
@@ -41,246 +50,21 @@ def enable_hidpi() -> None:
             pass
 
 
-# =============================================================================
-# Widgets
-# =============================================================================
-class AutocompleteEntry(ttk.Entry):
-    """Entry with a filter-as-you-type suggestion list.
-
-    * typing filters the list (prefix matches first, then word starts, then contains)
-    * Up/Down move through suggestions, Enter or Tab accepts the highlighted one
-    * Enter with the list hidden still calls on_commit(text) so the caller can validate
-    The list is a plain Listbox placed inside the window (not a separate popup
-    window), so keyboard focus never leaves the entry.
-    """
-
-    MAX_ROWS = 8
-
-    def __init__(self, master, get_values, on_commit=None, list_font=None, **kw):
-        self.var = tk.StringVar()
-        super().__init__(master, textvariable=self.var, **kw)
-        self._get_values = get_values
-        self._on_commit = on_commit
-        self._list_font = list_font
-        self._matches: list[str] = []
-        self._muted = False
-        self._visible = False
-        self._lb: tk.Listbox | None = None
-
-        self.var.trace_add("write", self._text_changed)
-        self.bind("<Down>", self._key_down)
-        self.bind("<Up>", self._key_up)
-        self.bind("<Return>", self._key_return)
-        self.bind("<KP_Enter>", self._key_return)
-        self.bind("<Tab>", self._key_tab)
-        self.bind("<Escape>", self._key_escape)
-        self.bind("<FocusOut>", lambda _e: self.hide())
-        self.bind("<FocusIn>", lambda _e: self.after_idle(self.select_range, 0, "end"))
-
-    # -- public ---------------------------------------------------------------
-    def set(self, text: str) -> None:
-        self._muted = True
-        try:
-            self.var.set(text)
-        finally:
-            self._muted = False
-        self.icursor("end")
-        self.hide()
-
-    def clear(self) -> None:
-        self.set("")
-
-    def hide(self) -> None:
-        if self._lb is not None:
-            self._lb.place_forget()
-        self._visible = False
-
-    def accept(self, value: str) -> None:
-        self.set(value)
-        if self._on_commit:
-            self._on_commit(value)
-
-    # -- popup ----------------------------------------------------------------
-    def _listbox(self) -> tk.Listbox:
-        if self._lb is None:
-            lb = tk.Listbox(
-                self.winfo_toplevel(),
-                height=1,
-                activestyle="none",
-                exportselection=False,
-                takefocus=0,
-                borderwidth=1,
-                relief="solid",
-                highlightthickness=0,
-                font=self._list_font,
-            )
-            lb.bind("<Button-1>", self._click)  # handled here so the entry keeps focus
-            self._lb = lb
-        return self._lb
-
-    def _show(self) -> None:
-        if not self._matches:
-            self.hide()
-            return
-        lb = self._listbox()
-        lb.delete(0, "end")
-        lb.insert("end", *self._matches)
-        lb.configure(height=min(len(self._matches), self.MAX_ROWS))
-        top = self.winfo_toplevel()
-        x = self.winfo_rootx() - top.winfo_rootx()
-        y = self.winfo_rooty() - top.winfo_rooty() + self.winfo_height()
-        lb.place(x=x, y=y, width=max(self.winfo_width(), 240))
-        lb.lift()
-        self._select(0)
-        self._visible = True
-
-    def _select(self, index: int) -> None:
-        lb = self._lb
-        if lb is None or not self._matches:
-            return
-        index = max(0, min(index, len(self._matches) - 1))
-        lb.selection_clear(0, "end")
-        lb.selection_set(index)
-        lb.activate(index)
-        lb.see(index)
-
-    def _index(self) -> int:
-        sel = self._lb.curselection() if self._lb is not None else ()
-        return sel[0] if sel else 0
-
-    # -- events ---------------------------------------------------------------
-    def _text_changed(self, *_):
-        if self._muted:
-            return
-        text = self.var.get().strip()
-        if not text:
-            self.hide()
-            return
-        self._matches = zl.filter_zones(text, self._get_values())
-        self._show()
-
-    def _key_down(self, _e):
-        if not self._visible:
-            self._matches = zl.filter_zones(self.var.get(), self._get_values())
-            self._show()
-        else:
-            self._select(self._index() + 1)
-        return "break"
-
-    def _key_up(self, _e):
-        if self._visible:
-            self._select(self._index() - 1)
-            return "break"
-
-    def _key_return(self, _e):
-        if self._visible and self._matches:
-            self.accept(self._matches[self._index()])
-        elif self._on_commit:
-            self._on_commit(self.var.get())
-        return "break"
-
-    def _key_tab(self, _e):
-        if self._visible and self._matches:
-            self.accept(self._matches[self._index()])
-            return "break"
-
-    def _key_escape(self, _e):
-        if self._visible:
-            self.hide()
-            return "break"
-
-    def _click(self, e):
-        if self._lb is not None and self._matches:
-            self.accept(self._matches[self._lb.nearest(e.y)])
-        return "break"
+def resource_path(rel: str) -> Path:
+    """Path to a bundled file, both from source and inside the PyInstaller build."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / rel
 
 
-class ZoneNumberEntry(ttk.Entry):
-    """4-digit entry: digits only, left-padded with zeros when you leave it."""
-
-    def __init__(self, master, **kw):
-        self.var = tk.StringVar()
-        vcmd = (master.register(self._validate), "%P")
-        super().__init__(
-            master,
-            textvariable=self.var,
-            width=7,
-            justify="center",
-            validate="key",
-            validatecommand=vcmd,
-            **kw,
-        )
-        self.bind("<FocusIn>", lambda _e: self.after_idle(self.select_range, 0, "end"))
-        self.bind("<FocusOut>", lambda _e: self.pad_now())
-
-    @staticmethod
-    def _validate(proposed: str) -> bool:
-        return proposed == "" or (len(proposed) <= 4 and proposed.isascii() and proposed.isdigit())
-
-    def pad_now(self) -> None:
-        t = self.var.get().strip()
-        if t.isdigit() and int(t) > 0:
-            self.var.set(t.zfill(4))
-
-
-class ZoneListDialog(tk.Toplevel):
-    """Edit the predefined Store Zone list (one name per line)."""
-
-    def __init__(self, master, zones, defaults, on_save):
-        super().__init__(master)
-        self.title("Store Zone list")
-        self.transient(master)
-        self.geometry("380x520")
-        self._on_save = on_save
-        self._defaults = defaults
-
-        ttk.Label(
-            self,
-            text="One Store Zone per line. Existing rows are not changed.",
-            padding=(12, 10, 12, 4),
-        ).pack(anchor="w")
-        frame = ttk.Frame(self, padding=(12, 0))
-        frame.pack(fill="both", expand=True)
-        self.text = tk.Text(frame, wrap="none", undo=True, font=master.big)
-        sb = ttk.Scrollbar(frame, command=self.text.yview)
-        self.text.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.text.pack(side="left", fill="both", expand=True)
-        self.text.insert("1.0", "\n".join(zones))
-
-        bar = ttk.Frame(self, padding=12)
-        bar.pack(fill="x")
-        ttk.Button(bar, text="Reset to defaults", command=self._reset).pack(side="left")
-        ttk.Button(bar, text="Save", command=self._save).pack(side="right")
-        ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right", padx=6)
-        self.bind("<Escape>", lambda _e: self.destroy())
-        self.text.focus_set()
-        self.grab_set()
-
-    def _reset(self):
-        self.text.delete("1.0", "end")
-        self.text.insert("1.0", "\n".join(self._defaults))
-
-    def _save(self):
-        zones = zl.parse_zone_lines(self.text.get("1.0", "end"))
-        if not zones:
-            messagebox.showwarning("Store Zone list", "The list can't be empty.", parent=self)
-            return
-        self._on_save(zones)
-        self.destroy()
-
-
-# =============================================================================
-# Main window
-# =============================================================================
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"ZoneEntry {__version__} – Inventory Zones")
-        self.minsize(860, 580)
-        self.geometry("1000x700")
+        self.withdraw()  # build the window off-screen, show it once it's ready (no flicker on slow PCs)
 
         self.data_dir = zl.app_data_dir()
+        self.settings = zl.load_settings(self.data_dir)
+        i18n.set_language(self.settings["language"] or i18n.detect_language())
+
         self.zones: list[str] = zl.load_zones(self.data_dir)
         session = zl.load_session(self.data_dir)
         self.entries: list[zl.Entry] = session["entries"]
@@ -288,57 +72,135 @@ class App(tk.Tk):
         self.history: list[list[zl.Entry]] = []
         self.edit_index: int | None = None
 
-        base = tkfont.nametofont("TkDefaultFont")
-        size = abs(int(base.cget("size")))
-        self.big = tkfont.Font(family=base.cget("family"), size=size + 3)
-        self.bold = tkfont.Font(family=base.cget("family"), size=size, weight="bold")
-        self.small = tkfont.Font(family=base.cget("family"), size=max(size - 1, 8))
+        self.scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
+        self._fonts()
+        self._window_geometry()
+        self._set_icon()
 
         self.store = tk.StringVar(value=session["store"])
         self.status = tk.StringVar()
         self.summary = tk.StringVar()
         self.hint = tk.StringVar()
+        self._status_fn = None
+        self._status_error = False
+        self._hint_fn = None
+        self._texts: list[tuple[tk.Widget, str, object]] = []
+        self._save_job: str | None = None
+        self._focus_job: str | None = None
 
         self._build()
         self._bind_keys()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.store.trace_add("write", lambda *_: self._save_session())
+        self.store.trace_add("write", lambda *_: self.schedule_save())
 
-        self.refresh()
+        self.apply_language()
+        self.rebuild_table()
         self.update_suggestion()
         if self.entries:
-            self.info(f"Restored {len(self.entries)} rows from your last session.")
+            self.info("status.restored", n=len(self.entries))
         else:
-            self.info("Ready. Type a Store Zone to begin.")
+            self.info("status.ready")
+        self.deiconify()
         self._focus_job = self.after(100, self.zone.focus_set)
 
+    # ----------------------------------------------------------- scaling/fonts
+    def px(self, n: float) -> int:
+        """Scale a pixel size for the Windows display-scaling setting (125 %, 150 % ...)."""
+        return int(round(n * self.scale))
+
+    def _fonts(self) -> None:
+        base = tkfont.nametofont("TkDefaultFont")
+        size = abs(int(base.cget("size")))
+        family = base.cget("family")
+        self.base = tkfont.Font(family=family, size=size)
+        self.big = tkfont.Font(family=family, size=size + 3)
+        self.bold = tkfont.Font(family=family, size=size, weight="bold")
+        self.bold_big = tkfont.Font(family=family, size=size + 2, weight="bold")
+        self.small = tkfont.Font(family=family, size=max(size - 1, 8))
+
+    def _window_geometry(self) -> None:
+        """Fit the window to the screen: old ThinkPads are often 1366x768."""
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w, h = min(self.px(1080), sw - 40), min(self.px(720), sh - 110)
+        self.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2 - 20)}")
+
+    def fit_minsize(self) -> None:
+        """Smallest window = what the current language's buttons actually need (never clipped).
+
+        German or Romanian labels are longer than English ones, so a fixed minimum would cut
+        them off on some language or font. Measured instead, and capped to the screen.
+        """
+        self.update_idletasks()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        need = max(self.px(860), self.winfo_reqwidth())
+        min_w, min_h = min(need, sw - 20), min(self.px(560), sh - 90)
+        self.minsize(min_w, min_h)
+        if self.winfo_viewable() and self.winfo_width() < min_w:
+            self.geometry(f"{min_w}x{self.winfo_height()}")
+
+    def _set_icon(self) -> None:
+        icon = resource_path("assets/zoneentry.ico")
+        if sys.platform == "win32" and icon.exists():
+            try:
+                self.iconbitmap(default=str(icon))
+            except tk.TclError:
+                pass
+
+    def ctrl_name(self) -> str:
+        return "Cmd" if sys.platform == "darwin" else tr("key.ctrl")
+
     # ------------------------------------------------------------------ layout
-    def _build(self):
+    def _reg(self, widget, fn, option: str = "text"):
+        """Register a widget whose text depends on the language / state."""
+        self._texts.append((widget, option, fn))
+        widget.configure(**{option: fn()})
+        return widget
+
+    def _refresh_texts(self) -> None:
+        for widget, option, fn in self._texts:
+            widget.configure(**{option: fn()})
+
+    def _build(self) -> None:
+        px = self.px
         style = ttk.Style(self)
         style.configure("Treeview", rowheight=int(self.big.metrics("linespace") * 1.5), font=self.big)
         style.configure("Treeview.Heading", font=self.bold)
         self._default_fg = style.lookup("TLabel", "foreground") or "black"
 
-        main = ttk.Frame(self, padding=12)
+        main = ttk.Frame(self, padding=px(12))
         main.pack(fill="both", expand=True)
 
-        # top bar
+        # ---- top bar: store name on the left; lists, language and help on the right
         top = ttk.Frame(main)
         top.pack(fill="x")
-        ttk.Label(top, text="Store / location:").pack(side="left")
-        self.store_entry = ttk.Entry(top, textvariable=self.store, width=34, font=self.big)
-        self.store_entry.pack(side="left", padx=8)
-        ttk.Label(top, text="(only used for the file name)", font=self.small).pack(side="left")
-        ttk.Button(top, text="New list", command=self.new_list).pack(side="right")
-        ttk.Button(top, text="Zone list…", command=self.edit_zone_list).pack(side="right", padx=6)
-        ttk.Button(top, text="Import…", command=self.import_file).pack(side="right")
+        self._reg(ttk.Label(top), lambda: tr("store.label")).pack(side="left")
+        self.store_entry = ttk.Entry(top, textvariable=self.store, width=24, font=self.big)
+        self.store_entry.pack(side="left", padx=px(8))
 
-        # entry box
-        box = ttk.LabelFrame(main, text="New entry", padding=10)
-        box.pack(fill="x", pady=(12, 6))
-        ttk.Label(box, text="Store Zone", font=self.bold).grid(row=0, column=0, sticky="w")
-        ttk.Label(box, text="Start Zone", font=self.bold).grid(row=0, column=1, sticky="w", padx=(16, 0))
-        ttk.Label(box, text="End Zone", font=self.bold).grid(row=0, column=2, sticky="w", padx=(16, 0))
+        self.help_btn = ttk.Button(top, text="?", width=3, command=lambda: self.help.click())
+        self.help_btn.pack(side="right")
+        self.help = HelpPopup(self, self.help_btn)
+
+        self.globe = load_globe(self, self.scale)  # keep a reference or Tk drops the image
+        self.lang_var = tk.StringVar(value=i18n.get_language())
+        self.lang_btn = ttk.Menubutton(top, image=self.globe, compound="left", width=10)
+        menu = tk.Menu(self.lang_btn, tearoff=False)
+        for code, name in LANGUAGES.items():
+            menu.add_radiobutton(label=name, variable=self.lang_var, value=code, command=lambda c=code: self.set_language(c))
+        self.lang_btn["menu"] = menu
+        self.lang_btn.pack(side="right", padx=(px(6), px(6)))
+
+        self._reg(ttk.Button(top, command=self.new_list), lambda: tr("btn.new")).pack(side="right")
+        self._reg(ttk.Button(top, command=self.edit_zone_list), lambda: tr("btn.zonelist")).pack(side="right", padx=px(6))
+        self._reg(ttk.Button(top, command=self.import_file), lambda: tr("btn.import")).pack(side="right")
+
+        # ---- entry box
+        box = ttk.LabelFrame(main, padding=px(10))
+        self._reg(box, lambda: tr("box.title"))
+        box.pack(fill="x", pady=(px(12), px(6)))
+        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.store_zone")).grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.start")).grid(row=0, column=1, sticky="w", padx=(px(16), 0))
+        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.end")).grid(row=0, column=2, sticky="w", padx=(px(16), 0))
 
         self.zone = AutocompleteEntry(
             box,
@@ -350,13 +212,14 @@ class App(tk.Tk):
         )
         self.zone.grid(row=1, column=0, sticky="w", pady=(2, 0))
         self.start = ZoneNumberEntry(box, font=self.big)
-        self.start.grid(row=1, column=1, sticky="w", padx=(16, 0), pady=(2, 0))
+        self.start.grid(row=1, column=1, sticky="w", padx=(px(16), 0), pady=(2, 0))
         self.end = ZoneNumberEntry(box, font=self.big)
-        self.end.grid(row=1, column=2, sticky="w", padx=(16, 0), pady=(2, 0))
-        self.add_btn = ttk.Button(box, text="Add  ⏎", command=self.submit, width=10)
-        self.add_btn.grid(row=1, column=3, padx=(16, 0), pady=(2, 0))
+        self.end.grid(row=1, column=2, sticky="w", padx=(px(16), 0), pady=(2, 0))
+        self.add_btn = ttk.Button(box, command=self.submit, width=14)
+        self._reg(self.add_btn, lambda: tr("btn.save" if self.edit_index is not None else "btn.add") + "  ⏎")
+        self.add_btn.grid(row=1, column=3, padx=(px(16), 0), pady=(2, 0))
         ttk.Label(box, textvariable=self.hint, font=self.small).grid(
-            row=2, column=0, columnspan=4, sticky="w", pady=(6, 0)
+            row=2, column=0, columnspan=4, sticky="w", pady=(px(6), 0)
         )
 
         self.start.bind("<Return>", self._start_enter)
@@ -364,20 +227,12 @@ class App(tk.Tk):
         self.end.bind("<Return>", self.submit)
         self.end.bind("<KP_Enter>", self.submit)
 
-        # table
+        # ---- table
         wrap = ttk.Frame(main)
-        wrap.pack(fill="both", expand=True, pady=(6, 6))
-        cols = ("n", "from", "to", "zone", "count")
-        self.tree = ttk.Treeview(wrap, columns=cols, show="headings", selectmode="extended")
-        for key, title, width, anchor in (
-            ("n", "#", 50, "center"),
-            ("from", "from", 110, "center"),
-            ("to", "to", 110, "center"),
-            ("zone", "Division", 320, "w"),
-            ("count", "Zones", 80, "center"),
-        ):
-            self.tree.heading(key, text=title)
-            self.tree.column(key, width=width, anchor=anchor, stretch=(key == "zone"))
+        wrap.pack(fill="both", expand=True, pady=(px(6), px(6)))
+        self.tree = ttk.Treeview(wrap, columns=("n", "from", "to", "zone", "count"), show="headings", selectmode="extended")
+        for key, width, anchor in (("n", 50, "center"), ("from", 110, "center"), ("to", 110, "center"), ("zone", 320, "w"), ("count", 80, "center")):
+            self.tree.column(key, width=px(width), anchor=anchor, stretch=(key == "zone"))
         self.tree.tag_configure("odd", background="#f3f6fa", foreground="#111111")
         self.tree.tag_configure("even", background="#ffffff", foreground="#111111")
         self.tree.tag_configure("editing", background="#fff3c4", foreground="#111111")
@@ -386,72 +241,143 @@ class App(tk.Tk):
         sb.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
 
-        # actions
+        # ---- action bar
         bar = ttk.Frame(main)
         bar.pack(fill="x")
-        ttk.Button(bar, text="Edit  (F2)", command=self.edit_selected).pack(side="left")
-        ttk.Button(bar, text="Delete  (Del)", command=self.delete_selected).pack(side="left", padx=6)
-        ttk.Button(bar, text=f"Undo  ({MODNAME}+Z)", command=self.undo).pack(side="left")
-        self.export_btn = ttk.Button(bar, text=f"Export to Excel…  ({MODNAME}+S)", command=self.export)
+        self._reg(ttk.Button(bar, command=self.edit_selected), lambda: f"{tr('btn.edit')}  (F2)").pack(side="left")
+        self._reg(ttk.Button(bar, command=self.delete_selected), lambda: f"{tr('btn.delete')}  ({tr('key.del')})").pack(side="left", padx=px(6))
+        self._reg(ttk.Button(bar, command=self.undo), lambda: f"{tr('btn.undo')}  ({self.ctrl_name()}+Z)").pack(side="left")
+        self.export_btn = ttk.Button(bar, command=self.export)
+        self._reg(self.export_btn, lambda: f"{tr('btn.export')}  ({self.ctrl_name()}+S)")
         self.export_btn.pack(side="right")
 
-        # status bar
+        # ---- status bar
         sbar = ttk.Frame(main)
-        sbar.pack(fill="x", pady=(10, 0))
+        sbar.pack(fill="x", pady=(px(10), 0))
         self.status_lbl = ttk.Label(sbar, textvariable=self.status)
         self.status_lbl.pack(side="left")
         ttk.Label(sbar, textvariable=self.summary, font=self.small).pack(side="right")
 
-    def _bind_keys(self):
+    def _bind_keys(self) -> None:
         self.tree.bind("<Double-1>", self._tree_double_click)
         self.tree.bind("<Return>", lambda _e: self.edit_selected())
         self.tree.bind("<F2>", lambda _e: self.edit_selected())
         self.tree.bind("<Delete>", lambda _e: self.delete_selected())
         self.tree.bind("<BackSpace>", lambda _e: self.delete_selected())
         self.bind("<F2>", lambda _e: self.edit_selected())
-        self.bind("<Escape>", lambda _e: self.cancel_edit())
+        self.bind("<Escape>", self._on_escape)
+        self.bind_all("<F1>", lambda _e: (self.help.toggle(), "break")[1])
         for seq, fn in (("z", self.undo), ("s", self.export), ("e", self.export)):
             try:
                 self.bind_all(f"<{MOD}-{seq}>", lambda _e, f=fn: (f(), "break")[1])
             except tk.TclError:
                 pass
 
-    # ----------------------------------------------------------------- status
-    def info(self, msg: str) -> None:
-        self.status.set(msg)
-        self.status_lbl.configure(foreground=self._default_fg)
+    def _on_escape(self, _e=None) -> None:
+        if self.help.visible:
+            self.help.hide()
+        else:
+            self.cancel_edit()
 
-    def error(self, msg: str, field: tk.Widget | None = None) -> str:
-        self.status.set("⚠  " + msg)
-        self.status_lbl.configure(foreground=ERROR_FG)
+    # ---------------------------------------------------------------- language
+    def set_language(self, code: str) -> None:
+        code = i18n.set_language(code)
+        self.lang_var.set(code)
+        self.settings["language"] = code
+        try:
+            zl.save_settings(self.data_dir, self.settings)
+        except OSError:
+            pass
+        self.apply_language()
+
+    def apply_language(self) -> None:
+        """Re-translate everything that is on screen, including the current status line."""
+        self.title(tr("app.title", version=__version__))
+        for key, name in (("n", "col.n"), ("from", "col.from"), ("to", "col.to"), ("zone", "col.zone"), ("count", "col.count")):
+            self.tree.heading(key, text=tr(name))
+        self.lang_btn.configure(text=LANGUAGES[i18n.get_language()])
+        self._refresh_texts()
+        self.help.hide()
+        self._render_status()
+        self._render_hint()
+        self.update_summary()
+        self.fit_minsize()
+
+    # ----------------------------------------------------------------- status
+    @staticmethod
+    def _as_fn(msg, params):
+        return msg if callable(msg) else (lambda: tr(msg, **params))
+
+    def _render_status(self) -> None:
+        text = self._status_fn() if self._status_fn else ""
+        self.status.set(("⚠  " if self._status_error else "") + text)
+        self.status_lbl.configure(foreground=ERROR_FG if self._status_error else self._default_fg)
+
+    def info(self, msg, **params) -> None:
+        """Show a status message: a translation key (+ values) or a function returning text."""
+        self._status_fn, self._status_error = self._as_fn(msg, params), False
+        self._render_status()
+
+    def error(self, msg, field: tk.Widget | None = None, **params) -> str:
+        self._status_fn, self._status_error = self._as_fn(msg, params), True
+        self._render_status()
         self.bell()
         if field is not None:
             field.focus_set()
         return "break"
 
+    def set_hint(self, msg, **params) -> None:
+        self._hint_fn = self._as_fn(msg, params)
+        self._render_hint()
+
+    def _render_hint(self) -> None:
+        self.hint.set(self._hint_fn() if self._hint_fn else "")
+
     def update_summary(self) -> None:
         n = len(self.entries)
         if not n:
-            self.summary.set("No rows yet")
+            self.summary.set(tr("summary.none"))
             return
         lo = min(e.first for e in self.entries)
         hi = max(e.last for e in self.entries)
-        text = f"{n} rows · {zl.pad(lo)}–{zl.pad(hi)} · {sum(e.count for e in self.entries)} zones"
+        text = tr("summary.main", rows=n, lo=zl.pad(lo), hi=zl.pad(hi), zones=sum(e.count for e in self.entries))
         gaps = zl.find_gaps(self.entries)
         if gaps:
             shown = ", ".join(zl.fmt_range(a, b) for a, b in gaps[:3])
-            more = f" +{len(gaps) - 3}" if len(gaps) > 3 else ""
-            text += f" · not covered: {shown}{more}"
+            if len(gaps) > 3:
+                shown += f" +{len(gaps) - 3}"
+            text += " · " + tr("summary.gaps", list=shown)
         self.summary.set(text)
 
     # ------------------------------------------------------------------ table
-    def refresh(self) -> None:
-        self.tree.delete(*self.tree.get_children())
-        for i, e in enumerate(self.entries):
-            tag = "editing" if i == self.edit_index else ("odd" if i % 2 else "even")
-            self.tree.insert("", "end", iid=str(i), values=(i + 1, e.start, e.end, e.zone, e.count), tags=(tag,))
+    # Adding a row only inserts that one row (the old code rebuilt the whole table on every
+    # Enter, which gets slow on an old PC with a few hundred rows). A full rebuild happens
+    # only for delete / undo / import / new list.
+    def _row_tag(self, i: int) -> str:
+        return "editing" if i == self.edit_index else ("odd" if i % 2 else "even")
+
+    def _row_values(self, i: int) -> tuple:
+        e = self.entries[i]
+        return (i + 1, e.start, e.end, e.zone, e.count)
+
+    def rebuild_table(self) -> None:
+        tree = self.tree
+        tree.delete(*tree.get_children())
+        for i in range(len(self.entries)):
+            tree.insert("", "end", iid=str(i), values=self._row_values(i), tags=(self._row_tag(i),))
         if self.entries:
-            self.tree.see(str(len(self.entries) - 1))
+            tree.see(str(len(self.entries) - 1))
+        self.update_summary()
+
+    def _table_append(self) -> None:
+        i = len(self.entries) - 1
+        self.tree.insert("", "end", iid=str(i), values=self._row_values(i), tags=(self._row_tag(i),))
+        self.tree.see(str(i))
+        self.update_summary()
+
+    def _table_update(self, i: int) -> None:
+        if 0 <= i < len(self.entries):
+            self.tree.item(str(i), values=self._row_values(i), tags=(self._row_tag(i),))
         self.update_summary()
 
     def update_suggestion(self) -> None:
@@ -461,36 +387,37 @@ class App(tk.Tk):
         last = self.entries[-1] if self.entries else None
         if last is None:
             self.start.var.set("")
-            self.hint.set("First row: type the Start Zone yourself (e.g. 0001), then the End Zone.")
+            self.set_hint("hint.first")
         else:
             nxt = zl.next_start(last.end)
             if nxt is None:
                 self.start.var.set("")
-                self.hint.set("Zone 9999 reached – there is no next zone.")
+                self.set_hint("hint.max")
             else:
                 self.start.var.set(nxt)
-                self.hint.set(f"Start Zone suggested: {nxt}  (previous End {last.end} + 1) – overwrite it if the numbering skips.")
+                self.set_hint("hint.suggest", start=nxt, prev=last.end)
         self.end.var.set("")
 
-    def _tree_double_click(self, e):
+    def _tree_double_click(self, e) -> None:
         iid = self.tree.identify_row(e.y)
         if iid:
             self.begin_edit(int(iid))
 
     # ------------------------------------------------------------------ input
+    def ask(self, kind: str, title: str, message: str, default_yes: bool = True) -> bool:
+        return ask_dialog(self, kind, title, message, default_yes)
+
     def _zone_committed(self, text: str) -> None:
         zone = zl.resolve_zone(text, self.zones)
         if zone is None:
             t = text.strip()
-            msg = (
-                f"'{t}' is not in the Store Zone list (add it via “Zone list…”)."
-                if t
-                else "Type a few letters of the Store Zone first."
-            )
-            self.error(msg, self.zone)
+            if t:
+                self.error("err.zone_unknown", self.zone, t=t)
+            else:
+                self.error("err.zone_type", self.zone)
             return
         self.zone.set(zone)
-        self.info(f"{zone} selected.")
+        self.info("status.zone_selected", zone=zone)
         (self.end if self.start.var.get().strip() else self.start).focus_set()
 
     def _start_enter(self, _e=None):
@@ -502,30 +429,28 @@ class App(tk.Tk):
         zone_text = self.zone.var.get().strip()
         zone = zl.resolve_zone(zone_text, self.zones)
         if zone is None:
-            return self.error(
-                f"'{zone_text}' is not in the Store Zone list." if zone_text else "Pick a Store Zone first.",
-                self.zone,
-            )
+            if zone_text:
+                return self.error("err.zone_not_in_list", self.zone, t=zone_text)
+            return self.error("err.zone_pick", self.zone)
         try:
-            start = zl.normalize_zone(self.start.var.get(), "Start Zone")
+            start = zl.normalize_zone(self.start.var.get(), "lbl.start")
         except zl.ZoneError as exc:
-            return self.error(str(exc), self.start)
+            return self.error(lambda exc=exc: str(exc), self.start)
         try:
-            end = zl.normalize_zone(self.end.var.get(), "End Zone")
+            end = zl.normalize_zone(self.end.var.get(), "lbl.end")
         except zl.ZoneError as exc:
-            return self.error(str(exc), self.end)
+            return self.error(lambda exc=exc: str(exc), self.end)
         if int(end) < int(start):
-            return self.error(f"End Zone {end} is smaller than Start Zone {start}.", self.end)
+            return self.error("err.end_lt_start", self.end, end=end, start=start)
 
         hit = zl.find_overlap(self.entries, start, end, skip_index=self.edit_index)
         if hit is not None:
             o = self.entries[hit]
-            if not messagebox.askyesno(
-                "Overlapping zones",
-                f"{start}–{end} overlaps with row {hit + 1}:\n\n    {o.label()}\n\nAdd it anyway?",
-                icon="warning",
-                default="no",
-                parent=self,
+            if not self.ask(
+                "yesno",
+                tr("dlg.overlap.title"),
+                tr("dlg.overlap.msg", start=start, end=end, n=hit + 1, label=o.label()),
+                default_yes=False,
             ):
                 self.start.focus_set()
                 return "break"
@@ -535,23 +460,30 @@ class App(tk.Tk):
         if self.edit_index is None:
             prev = self.entries[-1] if self.entries else None
             self.entries.append(entry)
-            msg = f"Added  {entry.label()}"
             skipped = zl.skipped_between(int(prev.end), int(start)) if prev is not None else None
-            if skipped:
-                msg += f"   ⚠ skips {zl.fmt_range(*skipped)}"
-            elif prev is not None and int(start) <= int(prev.end):
-                msg += "   ⚠ not after the previous row"
+            backwards = prev is not None and not skipped and int(start) <= int(prev.end)
+
+            def added(label=entry.label(), skipped=skipped, backwards=backwards) -> str:
+                msg = tr("status.added", label=label)
+                if skipped:
+                    msg += "   " + tr("status.skips", range=zl.fmt_range(*skipped))
+                elif backwards:
+                    msg += "   " + tr("status.not_after")
+                return msg
+
+            self._table_append()
+            self.info(added)
         else:
-            self.entries[self.edit_index] = entry
-            msg = f"Row {self.edit_index + 1} updated:  {entry.label()}"
+            i = self.edit_index
+            self.entries[i] = entry
             self.edit_index = None
-            self.add_btn.configure(text="Add  ⏎")
+            self._refresh_texts()
+            self._table_update(i)
+            self.info("status.updated", n=i + 1, label=entry.label())
 
         self.zone.clear()
-        self.refresh()
         self.update_suggestion()
-        self.info(msg)
-        self._save_session()
+        self.schedule_save()
         self.zone.focus_set()
         return "break"
 
@@ -566,25 +498,28 @@ class App(tk.Tk):
             self.begin_edit(int(sel[0]))
 
     def begin_edit(self, index: int) -> None:
+        previous = self.edit_index
         e = self.entries[index]
         self.edit_index = index
         self.zone.set(e.zone)
         self.start.var.set(e.start)
         self.end.var.set(e.end)
-        self.add_btn.configure(text="Save  ⏎")
-        self.hint.set(f"Editing row {index + 1} – Enter saves, Esc cancels.")
-        self.refresh()
+        self._refresh_texts()
+        self.set_hint("hint.editing", n=index + 1)
+        if previous is not None and previous != index:
+            self._table_update(previous)
+        self._table_update(index)
         self.end.focus_set()
 
     def cancel_edit(self) -> None:
         if self.edit_index is None:
             return
-        self.edit_index = None
-        self.add_btn.configure(text="Add  ⏎")
+        i, self.edit_index = self.edit_index, None
+        self._refresh_texts()
         self.zone.clear()
-        self.refresh()
+        self._table_update(i)
         self.update_suggestion()
-        self.info("Edit cancelled.")
+        self.info("status.edit_cancelled")
         self.zone.focus_set()
 
     def delete_selected(self) -> None:
@@ -595,42 +530,43 @@ class App(tk.Tk):
         self._push_history()
         for i in sel:
             del self.entries[i]
-        self.refresh()
+        self.rebuild_table()
         self.update_suggestion()
-        self.info(f"Deleted {len(sel)} row(s). Undo with {MODNAME}+Z.")
-        self._save_session()
+        self.info(lambda n=len(sel): tr("status.deleted", n=n, key=f"{self.ctrl_name()}+Z"))
+        self.schedule_save()
 
     def undo(self) -> None:
         if not self.history:
-            self.info("Nothing to undo.")
+            self.info("status.nothing_undo")
             return
         self.entries = self.history.pop()
         self.edit_index = None
-        self.add_btn.configure(text="Add  ⏎")
+        self._refresh_texts()
         self.zone.clear()
-        self.refresh()
+        self.rebuild_table()
         self.update_suggestion()
-        self.info("Undone.")
-        self._save_session()
+        self.info("status.undone")
+        self.schedule_save()
 
     def new_list(self) -> None:
-        if self.entries and not messagebox.askyesno(
-            "New list",
-            f"Clear all {len(self.entries)} rows and start a new store?\n(You can still undo with {MODNAME}+Z.)",
-            parent=self,
+        if self.entries and not self.ask(
+            "yesno",
+            tr("dlg.new.title"),
+            tr("dlg.new.msg", n=len(self.entries), key=f"{self.ctrl_name()}+Z"),
+            default_yes=False,
         ):
             return
         if self.entries:
             self._push_history()
         self.entries = []
         self.edit_index = None
-        self.add_btn.configure(text="Add  ⏎")
+        self._refresh_texts()
         self.zone.clear()
         self.store.set("")
-        self.refresh()
+        self.rebuild_table()
         self.update_suggestion()
-        self.info("New list. Enter the store name, then the first Store Zone.")
-        self._save_session()
+        self.info("status.newlist")
+        self.schedule_save()
         self.store_entry.focus_set()
 
     # ------------------------------------------------------------ zone list
@@ -640,9 +576,9 @@ class App(tk.Tk):
             try:
                 zl.save_zones(self.data_dir, zones)
             except OSError as exc:
-                self.error(f"Could not save the zone list: {exc}")
+                self.error("status.zones_save_failed", err=str(exc))
                 return
-            self.info(f"Zone list saved ({len(zones)} zones).")
+            self.info("status.zones_saved", n=len(zones))
 
         ZoneListDialog(self, self.zones, zl.DEFAULT_STORE_ZONES, save)
 
@@ -658,13 +594,13 @@ class App(tk.Tk):
 
     def export(self) -> None:
         if not self.entries:
-            messagebox.showinfo("Export", "There are no rows to export yet.", parent=self)
+            self.ask("info", tr("dlg.export.title"), tr("dlg.export.empty"))
             return
         path = filedialog.asksaveasfilename(
             parent=self,
-            title="Export to Excel",
+            title=tr("dlg.export.save_title"),
             defaultextension=".xlsx",
-            filetypes=[("Excel workbook", "*.xlsx")],
+            filetypes=[(tr("dlg.filetype.xlsx"), "*.xlsx")],
             initialdir=self._initial_dir(),
             initialfile=zl.default_export_name(self.store.get()),
         )
@@ -673,24 +609,20 @@ class App(tk.Tk):
         try:
             zl.export_xlsx(path, self.entries)
         except PermissionError:
-            messagebox.showerror(
-                "Can't save",
-                f"{os.path.basename(path)} can't be written.\nIs it open in Excel? Close it and try again.",
-                parent=self,
-            )
+            self.ask("error", tr("dlg.cantsave.title"), tr("dlg.cantsave.msg", file=os.path.basename(path)))
             return
         except OSError as exc:
-            messagebox.showerror("Can't save", str(exc), parent=self)
+            self.ask("error", tr("dlg.cantsave.title"), str(exc))
             return
         self.last_dir = os.path.dirname(path)
-        self._save_session()
-        self.info(f"Exported {len(self.entries)} rows → {path}")
+        self.flush_session()
+        self.info("status.exported", n=len(self.entries), path=path)
 
     def import_file(self) -> None:
         path = filedialog.askopenfilename(
             parent=self,
-            title="Import a zone sheet",
-            filetypes=[("Excel workbook", "*.xlsx")],
+            title=tr("dlg.import.open_title"),
+            filetypes=[(tr("dlg.filetype.xlsx"), "*.xlsx")],
             initialdir=self._initial_dir(),
         )
         if not path:
@@ -698,19 +630,16 @@ class App(tk.Tk):
         try:
             entries, problems = zl.import_xlsx(path)
         except zl.ZoneError as exc:
-            messagebox.showerror("Import", str(exc), parent=self)
+            self.ask("error", tr("dlg.import.title"), str(exc))
             return
         except Exception as exc:  # corrupt / locked file
-            messagebox.showerror("Import", f"Could not read the file:\n{exc}", parent=self)
+            self.ask("error", tr("dlg.import.title"), tr("dlg.import.read_err", err=str(exc)))
             return
         if not entries:
-            messagebox.showinfo("Import", "No usable rows found in that file.", parent=self)
+            self.ask("info", tr("dlg.import.title"), tr("dlg.import.none"))
             return
-        if self.entries and not messagebox.askokcancel(
-            "Import",
-            f"This replaces the {len(self.entries)} rows currently in the list "
-            f"with {len(entries)} rows from the file.\n(Undo brings them back.)",
-            parent=self,
+        if self.entries and not self.ask(
+            "okcancel", tr("dlg.import.title"), tr("dlg.import.replace", old=len(self.entries), new=len(entries))
         ):
             return
         known = {z.casefold() for z in self.zones}
@@ -728,41 +657,97 @@ class App(tk.Tk):
         self._push_history()
         self.cancel_edit()
         self.entries = entries
-        self.refresh()
+        self.rebuild_table()
         self.update_suggestion()
-        msg = f"Imported {len(entries)} rows."
-        if new_zones:
-            msg += f" Added {len(new_zones)} new zone name(s) to your list."
+
+        n_new, n_bad, n_rows = len(new_zones), len(problems), len(entries)
+
+        def imported() -> str:
+            parts = [tr("status.imported", n=n_rows)]
+            if n_new:
+                parts.append(tr("status.imported_new", n=n_new))
+            if n_bad:
+                parts.append(tr("status.imported_skipped", n=n_bad))
+            return " ".join(parts)
+
         if problems:
-            msg += f" Skipped {len(problems)} bad row(s)."
-            messagebox.showwarning("Import", "Skipped rows:\n\n" + "\n".join(problems[:15]), parent=self)
-        self.info(msg)
-        self._save_session()
+            self.ask("warning", tr("dlg.import.title"), tr("dlg.import.skipped", rows="\n".join(problems[:15])))
+        self.info(imported)
+        self.schedule_save()
         self.zone.focus_set()
 
     # ------------------------------------------------------------ persistence
-    def _save_session(self) -> None:
+    def schedule_save(self) -> None:
+        """Save soon, but not on every keystroke: disk writes are slow on old laptops."""
+        if self._save_job is None:
+            self._save_job = self.after(SAVE_DELAY_MS, self.flush_session)
+
+    def flush_session(self) -> None:
+        if self._save_job is not None:
+            try:
+                self.after_cancel(self._save_job)
+            except tk.TclError:
+                pass
+            self._save_job = None
         try:
             zl.save_session(self.data_dir, self.store.get(), self.entries, self.last_dir)
         except OSError:
             pass  # never interrupt data entry because autosave failed
 
     def _on_close(self) -> None:
-        self._save_session()
+        self.flush_session()
         self.destroy()
 
     def destroy(self) -> None:
-        try:
-            self.after_cancel(self._focus_job)
-        except (AttributeError, tk.TclError):
-            pass
+        for job in (self._save_job, self._focus_job):
+            if job:
+                try:
+                    self.after_cancel(job)
+                except tk.TclError:
+                    pass
         super().destroy()
 
 
-def main() -> None:
+# =============================================================================
+def selftest() -> int:
+    """`ZoneEntry.exe --selftest`: open the window, switch through all languages, write and
+    re-read an Excel file, close. Used by the build pipeline to prove the packaged exe works."""
+    import tempfile
+    import traceback
+
+    log = Path(tempfile.gettempdir()) / "zoneentry-selftest.log"
+    home = Path(tempfile.mkdtemp(prefix="zoneentry-selftest-"))
+    os.environ["ZONEENTRY_HOME"] = str(home)
+    try:
+        app = App()
+        app.update()
+        app.entries.append(zl.Entry("0001", "0010", "Kassen"))
+        xlsx = home / "selftest.xlsx"
+        zl.export_xlsx(xlsx, app.entries)  # proves openpyxl made it into the build
+        back, problems = zl.import_xlsx(xlsx)
+        assert back == app.entries and not problems, "Excel round trip failed"
+        for code in LANGUAGES:
+            app.set_language(code)
+            app.update()
+        app.help.show()
+        app.update()
+        app.help.hide()
+        app.destroy()
+        log.write_text("OK\n", encoding="utf-8")
+        return 0
+    except Exception:
+        log.write_text(traceback.format_exc(), encoding="utf-8")
+        return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
     enable_hidpi()
+    if "--selftest" in argv:
+        return selftest()
     App().mainloop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1,12 +1,20 @@
 name: Build Windows app
 
-# Builds ZoneEntry.exe on a real Windows machine hosted by GitHub, so you can
-# develop on a Mac and still get a native Windows executable.
-# Runs on every push to main, or manually from the "Actions" tab.
+# Builds ZoneEntry on a real Windows machine hosted by GitHub:
+#   * runs the tests
+#   * builds the app (a folder with ZoneEntry.exe: starts faster than a single-file exe)
+#   * starts the built exe in --selftest mode to prove it really works
+#   * makes ZoneEntry-Setup.exe (per-user installer) and ZoneEntry-portable.zip
+# Runs on every push to main, on version tags (v1.2.0 ...) and manually from the Actions tab.
+# A version tag also publishes a GitHub Release with the files attached.
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: write   # only used to attach files to a Release when a v* tag is pushed
 
 jobs:
   build:
@@ -22,14 +30,75 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pyinstaller pytest
 
-      - name: Run tests (logic + Excel layout)
+      - name: Run tests (logic, translations, Excel layout)
         run: python -m pytest -q
 
-      - name: Build ZoneEntry.exe
-        run: pyinstaller --onefile --windowed --name ZoneEntry app.py
+      - name: Read version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = python -c "from version import __version__; print(__version__)"
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build the app
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --windowed --name ZoneEntry `
+            --icon assets/zoneentry.ico `
+            --add-data "assets/zoneentry.ico;assets" `
+            --exclude-module numpy --exclude-module PIL --exclude-module pandas `
+            --exclude-module matplotlib --exclude-module scipy --exclude-module lxml `
+            app.py
+
+      - name: Start the built exe in self-test mode
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\ZoneEntry\ZoneEntry.exe" -ArgumentList "--selftest" -Wait -PassThru
+          $log = Join-Path $env:TEMP "zoneentry-selftest.log"
+          if (Test-Path $log) { Get-Content $log }
+          if ($p.ExitCode -ne 0) { throw "Self-test of the built app failed (exit code $($p.ExitCode))" }
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\ZoneEntry -DestinationPath dist\ZoneEntry-portable.zip
+
+      - name: Build installer
+        id: installer
+        continue-on-error: true   # the portable zip is still published if only this step fails
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" installer\ZoneEntry.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Set-Location dist
+          $files = Get-ChildItem ZoneEntry-Setup.exe, ZoneEntry-portable.zip -ErrorAction SilentlyContinue
+          $files | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } | Set-Content SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ZoneEntry-windows
-          path: dist/ZoneEntry.exe
+          name: ZoneEntry-installer
+          path: |
+            dist/ZoneEntry-Setup.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ZoneEntry-portable
+          path: dist/ZoneEntry-portable.zip
           if-no-files-found: error
+
+      - name: Publish GitHub Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = @("dist\ZoneEntry-portable.zip", "dist\SHA256SUMS.txt")
+          if (Test-Path dist\ZoneEntry-Setup.exe) { $files += "dist\ZoneEntry-Setup.exe" }
+          gh release create "${{ github.ref_name }}" @files --title "ZoneEntry ${{ github.ref_name }}" --generate-notes

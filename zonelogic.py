@@ -13,11 +13,15 @@ import sys
 import unicodedata
 from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font
+from i18n import LANGUAGES, tr
+
+# NOTE: openpyxl is imported lazily inside export_xlsx / import_xlsx. It is by far the
+# heaviest import, and on an older laptop it would add noticeable delay to every start
+# even though most sessions only need it once, when exporting.
 
 APP_NAME = "ZoneEntry"
 
@@ -67,7 +71,22 @@ DEFAULT_STORE_ZONES: tuple[str, ...] = (
 
 
 class ZoneError(ValueError):
-    """A validation problem whose message is safe to show to the user as-is."""
+    """A validation problem. str(error) is the message in the *current* UI language.
+
+    It stores a translation key + values instead of finished text, so a message that is
+    still on screen can be re-rendered when the user switches language.
+    """
+
+    def __init__(self, key: str, **params):
+        super().__init__(key)
+        self.key = key
+        self.params = params
+
+    def __str__(self) -> str:
+        p = dict(self.params)
+        if "what" in p:  # field names are translation keys too ('lbl.start' -> 'Start Zone')
+            p["what"] = tr(p["what"])
+        return tr(self.key, **p)
 
 
 @dataclass(frozen=True)
@@ -110,14 +129,14 @@ def normalize_zone(text: str, what: str = "Zone") -> str:
     """Validate user input and return it padded to 4 digits ('42' -> '0042')."""
     t = (text or "").strip()
     if not t:
-        raise ZoneError(f"{what} is empty.")
+        raise ZoneError("zone.err.empty", what=what)
     if not (t.isascii() and t.isdigit()):
-        raise ZoneError(f"{what} must contain digits only (got '{t}').")
+        raise ZoneError("zone.err.digits", what=what, text=t)
     if len(t) > 4:
-        raise ZoneError(f"{what} can have at most 4 digits (got '{t}').")
+        raise ZoneError("zone.err.len", what=what, text=t)
     n = int(t)
     if not MIN_ZONE <= n <= MAX_ZONE:
-        raise ZoneError(f"{what} must be between {pad(MIN_ZONE)} and {pad(MAX_ZONE)}.")
+        raise ZoneError("zone.err.range", what=what, lo=pad(MIN_ZONE), hi=pad(MAX_ZONE))
     return pad(n)
 
 
@@ -188,14 +207,19 @@ _UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue"})
 _WORD_SPLIT = re.compile(r"[^0-9a-z]+")
 
 
-def _variants(text: str) -> set[str]:
-    """Search keys: case-folded (ß->ss), umlauts as 'ae' or stripped to 'a'."""
+@lru_cache(maxsize=4096)
+def _variants(text: str) -> frozenset[str]:
+    """Search keys: case-folded (ß->ss), umlauts as 'ae' or stripped to 'a'.
+
+    Cached: the zone names never change while typing, so each name is normalised once
+    instead of on every keystroke.
+    """
     s = text.casefold()
     expanded = s.translate(_UMLAUTS)
     stripped = "".join(
         ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch)
     )
-    return {expanded, stripped}
+    return frozenset((expanded, stripped))
 
 
 def _score(query: str, name: str) -> int | None:
@@ -292,6 +316,22 @@ def load_zones(folder: Path) -> list[str]:
     return zones or list(DEFAULT_STORE_ZONES)
 
 
+def load_settings(folder: Path) -> dict:
+    """User preferences (currently just the language). Never raises."""
+    settings: dict = {"language": ""}
+    try:
+        data = json.loads((folder / "settings.json").read_text(encoding="utf-8"))
+        if data.get("language") in LANGUAGES:
+            settings["language"] = data["language"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    return settings
+
+
+def save_settings(folder: Path, settings: dict) -> None:
+    (folder / "settings.json").write_text(json.dumps(settings, indent=1), encoding="utf-8")
+
+
 def save_session(
     folder: Path, store: str, entries: Sequence[Entry], last_dir: str = ""
 ) -> None:
@@ -336,6 +376,9 @@ def default_export_name(store: str, today: date | None = None) -> str:
 
 def export_xlsx(path: str | os.PathLike, entries: Sequence[Entry]) -> None:
     """Write the sheet exactly like ZoneUpdate.xlsx: from | to | Division, all text."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+
     wb = Workbook()
     ws = wb.active
     ws.title = SHEET_NAME
@@ -367,15 +410,14 @@ def _cell_text(value) -> str:
 
 def import_xlsx(path: str | os.PathLike) -> tuple[list[Entry], list[str]]:
     """Read a sheet in the same layout. Returns (entries, list of skipped-row problems)."""
+    from openpyxl import load_workbook
+
     wb = load_workbook(path, data_only=True)
     try:
         ws = wb.active
         header = [_cell_text(ws.cell(row=1, column=c).value).casefold() for c in (1, 2, 3)]
         if header != [h.casefold() for h in HEADERS]:
-            raise ZoneError(
-                "This file doesn't look like a zone sheet: "
-                "expected the headers 'from', 'to', 'Division' in A1:C1."
-            )
+            raise ZoneError("imp.err.header")
         entries: list[Entry] = []
         problems: list[str] = []
         for r, (a, b, c) in enumerate(
@@ -387,9 +429,9 @@ def import_xlsx(path: str | os.PathLike) -> tuple[list[Entry], list[str]]:
                 s = normalize_zone(_cell_text(a), "'from'")
                 e = normalize_zone(_cell_text(b), "'to'")
                 if int(s) > int(e):
-                    raise ZoneError("'from' is bigger than 'to'.")
+                    raise ZoneError("imp.err.from_gt_to")
             except ZoneError as exc:
-                problems.append(f"Row {r}: {exc}")
+                problems.append(tr("imp.err.row", r=r, msg=str(exc)))
                 continue
             entries.append(Entry(s, e, _cell_text(c)))
         return entries, problems
