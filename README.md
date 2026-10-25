@@ -4,7 +4,7 @@
 press Enter. ZoneEntry fills in the next Start Zone for you and exports everything to Excel in the standard
 `from | to | Division` layout.
 
-![ZoneEntry main window](docs/screenshot.png)
+![ZoneEntry main window](docs/screenshot.jpg)
 
 * Keyboard-first: one row takes about two seconds, no mouse needed
 * Start Zone is filled in automatically (previous End + 1, with leading zeros)
@@ -52,7 +52,7 @@ Download **`ZoneEntry-portable.zip`** from the Releases page, extract it somewhe
 
 ## Quick start
 
-![The quick guide you get by hovering over the ? button](docs/help.png)
+![The quick guide you get by hovering over the ? button](docs/help.jpg)
 
 A row records one Store Zone and the range of Inventory Zones (shelf codes) inside it.
 
