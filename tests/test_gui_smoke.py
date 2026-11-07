@@ -35,6 +35,7 @@ def app(tmp_path, monkeypatch):
     monkeypatch.delenv("LC_MESSAGES", raising=False)
     a = appmod.App()
     a.ask = no_dialog
+    a.ask_choice = no_dialog
     a.update()
     yield a
     a.destroy()
@@ -125,10 +126,13 @@ def test_popup_visible_while_typing_and_hidden_after_accept(app):
     assert not app.zone._visible
 
 
-def test_unknown_zone_is_rejected_and_nothing_is_added(app):
+def test_unknown_zone_cancelled_adds_nothing(app):
+    asked = []
+    app.ask_choice = lambda title, msg, buttons, default=0, cancel=None: asked.append((msg, [v for _, v in buttons])) or None
     add_row(app, "zzz", "10", start="1")
-    assert app.entries == []
-    assert "not in the Store Zone list" in app.status.get()
+    assert app.entries == [] and "Zzz" not in app.zones
+    assert asked and "“Zzz” is not in the Store Zone list" in asked[0][0]
+    assert asked[0][1] == ["add", "outdoor", None]  # Enter on the first button = plain add
 
 
 def test_end_before_start_is_rejected(app):
@@ -286,11 +290,11 @@ def test_globe_button_has_icon_and_language_name(app):
 
 
 def test_visible_status_message_is_retranslated(app):
-    add_row(app, "zzz", "10", start="1")
-    assert app.status.get() == "⚠  " + tr("err.zone_not_in_list", t="zzz")
+    add_row(app, "", "10", start="1")  # no zone typed
+    assert app.status.get() == "⚠  " + tr("err.zone_pick")
     app.set_language("hu")
-    assert app.status.get() == "⚠  " + tr("err.zone_not_in_list", t="zzz")
-    assert "nincs az üzletzónák listájában" in app.status.get()
+    assert app.status.get() == "⚠  " + tr("err.zone_pick")
+    assert app.status.get() != "⚠  " + i18n.STRINGS["err.zone_pick"]["en"]
     add_row(app, "holz", "x", start="1")  # a ZoneError message
     assert "számjegy" in app.status.get()
     app.set_language("de")
@@ -452,17 +456,18 @@ def test_dialog_enter_activates_default_and_escape_cancels(app):
 
 def test_zone_list_dialog_edits_the_list(app, monkeypatch):
     saved = []
-    dlg = widgets.ZoneListDialog(app, app.zones, zl.DEFAULT_STORE_ZONES, saved.append)
+    dlg = widgets.ZoneListDialog(app, app._zone_defs(), zl.default_zone_defs(), saved.append)
     app.update()
     assert dlg.text.get("1.0", "end").splitlines()[0] == "Windfang"
     dlg.text.delete("1.0", "end")
-    dlg.text.insert("1.0", "Neu A\nNeu B\n\nneu a\n")
+    dlg.text.insert("1.0", "Neu A\nNeu B\n\nneu a\n*Garten {Links|Rechts}\n")
     dlg._save()
-    assert saved == [["Neu A", "Neu B"]]
+    assert saved == [[("Neu A", False), ("Neu B", False), ("Garten Links", True), ("Garten Rechts", True)]]
 
-    dlg2 = widgets.ZoneListDialog(app, ["x"], zl.DEFAULT_STORE_ZONES, saved.append)
+    dlg2 = widgets.ZoneListDialog(app, [("x", False)], zl.default_zone_defs(), saved.append)
     dlg2._reset()
-    assert dlg2.text.get("1.0", "end").splitlines() == list(zl.DEFAULT_STORE_ZONES)
+    assert dlg2.text.get("1.0", "end").splitlines() == zl.format_zone_defs(zl.default_zone_defs())
+    assert "*Garten" in dlg2.text.get("1.0", "end").splitlines()
     shown = []
     monkeypatch.setattr(widgets, "ask", lambda *a, **k: shown.append(a[3]) or True)
     dlg2.text.delete("1.0", "end")
@@ -569,3 +574,183 @@ def test_new_store_clears_rows_and_name_and_warns_until_exported(app, tmp_path, 
     app.new_list()  # exported -> no warning
     assert tr("dlg.new.unexported").strip() not in messages[-1]
     assert app.entries == []
+
+
+# ================================================================ floors (EG / OG) and outdoor zones
+def test_floor_prefix_is_added_to_indoor_zones_only(app):
+    app.set_floor("OG")
+    add_row(app, "san", "10", start="1")
+    add_row(app, "garten", "20")  # "Garten" is an outdoor zone
+    assert [e.zone for e in app.entries] == ["OG Sanitär", "Garten"]
+    app.set_floor("")
+    add_row(app, "kassen", "30")
+    assert app.entries[-1].zone == "Kassen"
+
+
+def test_floor_is_sticky_and_hotkeys_switch_it(app):
+    add_row(app, "san", "10", start="1")
+    assert app.entries[0].zone == "Sanitär" and app.floor.get() == ""
+    press(app.zone, "Control-Key-1")
+    assert app.floor.get() == "EG"
+    add_row(app, "kassen", "20")
+    add_row(app, "holz", "30")  # still EG: nothing was touched
+    press(app.zone, "Control-Key-2")
+    assert app.floor.get() == "OG"
+    add_row(app, "deko", "40")
+    press(app.zone, "Control-Key-0")
+    assert app.floor.get() == ""
+    assert [e.zone for e in app.entries] == ["Sanitär", "EG Kassen", "EG Holz", "OG Deko"]
+
+
+def test_clicking_a_floor_button_sets_the_floor_and_returns_focus_to_the_zone_box(app):
+    app.floor_buttons["EG"].invoke()
+    app.update()
+    assert app.floor.get() == "EG" and app.focus_get() is app.zone
+    assert "EG" in app.status.get()
+    app.floor_buttons[""].invoke()
+    assert app.floor.get() == "" and app.status.get() == tr("status.floor_none")
+
+
+def test_floor_buttons_are_skipped_by_tab(app):
+    assert all(not int(str(b.cget("takefocus")) or 0) for b in app.floor_buttons.values())
+
+
+def test_status_shows_the_final_text_when_a_zone_is_picked(app):
+    app.set_floor("OG")
+    app.zone.focus_force()
+    app.zone.var.set("san")
+    press(app.zone, "Return")
+    assert app.status.get() == tr("status.zone_selected", zone="OG Sanitär")
+    app.zone.clear()
+    app.zone.var.set("garten")
+    press(app.zone, "Return")
+    assert app.status.get() == tr("status.zone_selected", zone="Garten")
+
+
+def test_editing_a_row_shows_its_own_floor_and_restores_the_sticky_one(app):
+    app.set_floor("EG")
+    add_row(app, "san", "10", start="1")
+    app.set_floor("OG")
+    add_row(app, "san", "20")
+    app.set_floor("EG")  # what the person is counting now
+    app.begin_edit(1)
+    assert app.floor.get() == "OG" and app.zone.var.get() == "Sanitär"
+    app.end.var.set("25")
+    press(app.end, "Return")
+    assert app.entries[1].zone == "OG Sanitär" and app.entries[1].end == "0025"
+    assert app.floor.get() == "EG"  # back to the sticky floor
+    app.begin_edit(0)
+    app.cancel_edit()
+    assert app.floor.get() == "EG"
+
+
+def test_a_zone_that_really_is_called_eg_something_is_not_split(app):
+    app.zones.append("EG Lager")
+    app.entries.append(zl.Entry("0001", "0005", "EG Lager"))
+    app.rebuild_table()
+    app.set_floor("OG")
+    app.begin_edit(0)
+    assert app.zone.var.get() == "EG Lager" and app.floor.get() == ""
+    app.cancel_edit()
+    assert app.floor.get() == "OG"
+
+
+def test_floor_survives_a_restart_and_new_store_clears_it(app):
+    app.set_floor("OG")
+    add_row(app, "san", "10", start="1")
+    app.flush_session()
+    second = appmod.App()
+    try:
+        assert second.floor.get() == "OG"
+    finally:
+        second.destroy()
+    app.ask = lambda *a, **k: True
+    app.new_list()
+    assert app.floor.get() == ""
+    app.flush_session()
+    assert zl.load_session(app.data_dir)["floor"] == ""
+
+
+def test_floor_while_editing_does_not_overwrite_the_saved_sticky_floor(app):
+    app.set_floor("EG")
+    add_row(app, "san", "10", start="1")
+    app.set_floor("")
+    app.begin_edit(0)
+    app.flush_session()
+    assert zl.load_session(app.data_dir)["floor"] == ""
+    app.cancel_edit()
+
+
+# ---------------------------------------------------------------- unknown zones: add on the fly
+def test_unknown_zone_can_be_added_as_an_indoor_zone(app):
+    app.ask_choice = lambda *a, **k: "add"
+    app.set_floor("OG")
+    add_row(app, "gartenhaus", "10", start="1")  # typed in lower case -> tidied up
+    assert "Gartenhaus" in app.zones and not app.is_outdoor("Gartenhaus")
+    assert app.entries[0].zone == "OG Gartenhaus"
+    assert "Gartenhaus" in (app.data_dir / "zones.txt").read_text(encoding="utf-8").splitlines()
+
+
+def test_unknown_zone_can_be_added_as_an_outdoor_zone(app):
+    app.ask_choice = lambda *a, **k: "outdoor"
+    app.set_floor("OG")
+    add_row(app, "Terrasse", "10", start="1")
+    assert app.is_outdoor("Terrasse")
+    assert app.entries[0].zone == "Terrasse"  # no OG
+    assert "*Terrasse" in (app.data_dir / "zones.txt").read_text(encoding="utf-8").splitlines()
+    assert zl.load_zone_defs(app.data_dir)[-1] == ("Terrasse", True)
+
+
+def test_added_zone_is_found_by_autocomplete_next_time(app):
+    app.ask_choice = lambda *a, **k: "add"
+    add_row(app, "Regenerationsbereich", "10", start="1")
+    assert zl.filter_zones("regen", app.zones)[0] == "Regenerationsbereich"
+
+
+def test_zone_list_editor_keeps_the_outdoor_marks(app):
+    seen = []
+    app.edit_zone_list_dialog = None
+    dlg = widgets.ZoneListDialog(app, app._zone_defs(), zl.default_zone_defs(), lambda defs: seen.append(defs))
+    dlg.text.delete("1.0", "end")
+    dlg.text.insert("1.0", "Sanitär\n*Garten {Links|Rechts}\n")
+    dlg._save()
+    assert seen == [[("Sanitär", False), ("Garten Links", True), ("Garten Rechts", True)]]
+
+
+def test_import_adds_bare_zone_names_not_prefixed_ones(app, tmp_path, monkeypatch):
+    path = tmp_path / "in.xlsx"
+    zl.export_xlsx(
+        path,
+        [
+            zl.Entry("0001", "0010", "EG Neuer Bereich"),
+            zl.Entry("0011", "0020", "OG Neuer Bereich"),
+            zl.Entry("0021", "0030", "OG Sanitär"),
+            zl.Entry("0031", "0040", "Garten Links"),
+        ],
+    )
+    monkeypatch.setattr(appmod.filedialog, "askopenfilename", lambda **k: str(path))
+    app.import_file()
+    assert [e.zone for e in app.entries][:3] == ["EG Neuer Bereich", "OG Neuer Bereich", "OG Sanitär"]
+    assert app.zones.count("Neuer Bereich") == 1
+    assert "EG Neuer Bereich" not in app.zones and "OG Sanitär" not in app.zones
+    assert "Garten Links" in app.zones and app.is_outdoor("Garten Links")
+
+
+def test_export_contains_the_prefixed_text(app, tmp_path, monkeypatch):
+    from openpyxl import load_workbook
+
+    app.set_floor("EG")
+    add_row(app, "san", "10", start="1")
+    out = tmp_path / "x.xlsx"
+    monkeypatch.setattr(appmod.filedialog, "asksaveasfilename", lambda **k: str(out))
+    app.export()
+    ws = load_workbook(out).active
+    assert [c.value for c in ws[2]] == ["0001", "0010", "EG Sanitär"]
+
+
+def test_floor_selector_labels_and_buttons_in_every_language(app):
+    for code in i18n.LANGUAGES:
+        app.set_language(code)
+        app.update()
+        assert [b.cget("text") for b in app.floor_buttons.values()] == ["–", "EG", "OG"]
+        assert app.winfo_reqwidth() <= app.winfo_screenwidth()

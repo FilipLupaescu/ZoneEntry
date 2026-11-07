@@ -27,6 +27,7 @@ from widgets import (
     ZoneListDialog,
     ZoneNumberEntry,
     ask as ask_dialog,
+    ask_choice as ask_choice_dialog,
     load_globe,
 )
 
@@ -65,13 +66,16 @@ class App(tk.Tk):
         self.settings = zl.load_settings(self.data_dir)
         i18n.set_language(self.settings["language"] or i18n.detect_language())
 
-        self.zones: list[str] = zl.load_zones(self.data_dir)
+        defs = zl.load_zone_defs(self.data_dir)
+        self.zones: list[str] = [name for name, _ in defs]
+        self.outdoor: set[str] = {name.casefold() for name, is_out in defs if is_out}  # never get a floor prefix
         session = zl.load_session(self.data_dir)
         self.entries: list[zl.Entry] = session["entries"]
         self._exported: list[zl.Entry] = []  # rows as of the last Excel export (for the "not exported yet" warning)
         self.last_dir: str = session["last_dir"]
         self.history: list[list[zl.Entry]] = []
         self.edit_index: int | None = None
+        self._floor_before_edit: str | None = None  # the sticky floor, parked while a row is being edited
 
         self.scale = max(1.0, self.winfo_fpixels("1i") / 96.0)
         self._fonts()
@@ -79,6 +83,7 @@ class App(tk.Tk):
         self._set_icon()
 
         self.store = tk.StringVar(value=session["store"])
+        self.floor = tk.StringVar(value=session["floor"])  # "", "EG" or "OG": sticky until changed
         self.status = tk.StringVar()
         self.summary = tk.StringVar()
         self.hint = tk.StringVar()
@@ -93,6 +98,7 @@ class App(tk.Tk):
         self._bind_keys()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.store.trace_add("write", lambda *_: self.schedule_save())
+        self.floor.trace_add("write", lambda *_: self.schedule_save())
 
         self.apply_language()
         self.rebuild_table()
@@ -199,9 +205,23 @@ class App(tk.Tk):
         box = ttk.LabelFrame(main, padding=px(10))
         self._reg(box, lambda: tr("box.title"))
         box.pack(fill="x", pady=(px(12), px(6)))
-        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.store_zone")).grid(row=0, column=0, sticky="w")
-        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.start")).grid(row=0, column=1, sticky="w", padx=(px(16), 0))
-        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.end")).grid(row=0, column=2, sticky="w", padx=(px(16), 0))
+        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.floor")).grid(row=0, column=0, sticky="w")
+        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.store_zone")).grid(row=0, column=1, sticky="w", padx=(px(16), 0))
+        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.start")).grid(row=0, column=2, sticky="w", padx=(px(16), 0))
+        self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.end")).grid(row=0, column=3, sticky="w", padx=(px(16), 0))
+
+        # floor selector: "–" (none) / EG / OG. Sticky; skipped by Tab; hotkeys Ctrl+0 / Ctrl+1 / Ctrl+2
+        floor_box = tk.Frame(box)
+        floor_box.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self.floor_buttons: dict[str, tk.Radiobutton] = {}
+        for value, text in (("", "–"), ("EG", "EG"), ("OG", "OG")):
+            rb = tk.Radiobutton(
+                floor_box, text=text, value=value, variable=self.floor, indicatoron=False, width=4,
+                font=self.bold, selectcolor="#9cc5f2", activebackground="#dbe9fa", takefocus=False,
+                command=self._floor_clicked, pady=px(2),
+            )
+            rb.pack(side="left")
+            self.floor_buttons[value] = rb
 
         self.zone = AutocompleteEntry(
             box,
@@ -211,16 +231,16 @@ class App(tk.Tk):
             width=26,
             font=self.big,
         )
-        self.zone.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self.zone.grid(row=1, column=1, sticky="w", padx=(px(16), 0), pady=(2, 0))
         self.start = ZoneNumberEntry(box, font=self.big)
-        self.start.grid(row=1, column=1, sticky="w", padx=(px(16), 0), pady=(2, 0))
+        self.start.grid(row=1, column=2, sticky="w", padx=(px(16), 0), pady=(2, 0))
         self.end = ZoneNumberEntry(box, font=self.big)
-        self.end.grid(row=1, column=2, sticky="w", padx=(px(16), 0), pady=(2, 0))
+        self.end.grid(row=1, column=3, sticky="w", padx=(px(16), 0), pady=(2, 0))
         self.add_btn = ttk.Button(box, command=self.submit, width=14)
         self._reg(self.add_btn, lambda: tr("btn.save" if self.edit_index is not None else "btn.add") + "  ⏎")
-        self.add_btn.grid(row=1, column=3, padx=(px(16), 0), pady=(2, 0))
+        self.add_btn.grid(row=1, column=4, padx=(px(16), 0), pady=(2, 0))
         ttk.Label(box, textvariable=self.hint, font=self.small).grid(
-            row=2, column=0, columnspan=4, sticky="w", pady=(px(6), 0)
+            row=2, column=0, columnspan=5, sticky="w", pady=(px(6), 0)
         )
 
         self.start.bind("<Return>", self._start_enter)
@@ -271,6 +291,11 @@ class App(tk.Tk):
         for seq, fn in (("z", self.undo), ("s", self.export), ("e", self.export)):
             try:
                 self.bind_all(f"<{MOD}-{seq}>", lambda _e, f=fn: (f(), "break")[1])
+            except tk.TclError:
+                pass
+        for digit, value in (("0", ""), ("1", "EG"), ("2", "OG")):  # "Key-" matters: <Control-1> alone means mouse button 1
+            try:
+                self.bind_all(f"<{MOD}-Key-{digit}>", lambda _e, v=value: (self.set_floor(v), "break")[1])
             except tk.TclError:
                 pass
 
@@ -408,17 +433,89 @@ class App(tk.Tk):
     def ask(self, kind: str, title: str, message: str, default_yes: bool = True) -> bool:
         return ask_dialog(self, kind, title, message, default_yes)
 
+    # ------------------------------------------------------------------ floors
+    def is_outdoor(self, zone: str) -> bool:
+        return zone.casefold() in self.outdoor
+
+    def division(self, zone: str) -> str:
+        """What goes into the Division column: 'EG Sanitär', or the bare name for no floor / outdoor zones."""
+        return zl.with_floor(self.floor.get(), zone, self.is_outdoor(zone))
+
+    def sticky_floor(self) -> str:
+        """The floor new rows get (while a row is being edited the box shows that row's floor instead)."""
+        return self._floor_before_edit if self._floor_before_edit is not None else self.floor.get()
+
+    def set_floor(self, value: str) -> None:
+        self.floor.set(value if value in zl.FLOORS else "")
+        self._announce_floor()
+        self.zone.focus_set()
+
+    def _floor_clicked(self) -> None:
+        self._announce_floor()
+        self.zone.focus_set()
+
+    def _announce_floor(self) -> None:
+        floor = self.floor.get()
+        self.info("status.floor", floor=floor) if floor else self.info("status.floor_none")
+
+    def _restore_floor(self) -> None:
+        if self._floor_before_edit is not None:
+            self.floor.set(self._floor_before_edit)
+            self._floor_before_edit = None
+
+    # ------------------------------------------------------------- zone list
+    def ask_choice(self, title: str, message: str, buttons, default: int = 0, cancel=None):
+        return ask_choice_dialog(self, title, message, buttons, default, cancel)
+
+    def _zone_defs(self) -> list[zl.ZoneDef]:
+        return [(z, self.is_outdoor(z)) for z in self.zones]
+
+    def _save_zone_defs(self) -> bool:
+        try:
+            zl.save_zone_defs(self.data_dir, self._zone_defs())
+            return True
+        except OSError as exc:
+            self.error("status.zones_save_failed", err=str(exc))
+            return False
+
+    def _resolve_or_add(self, text: str) -> str | None:
+        """The canonical zone name for what was typed. An unknown name is offered for adding to the list."""
+        t = text.strip()
+        if not t:
+            return None
+        zone = zl.resolve_zone(t, self.zones)
+        if zone is not None:
+            return zone
+        name = zl.tidy_new_zone_name(t)
+        zone = zl.resolve_zone(name, self.zones)
+        if zone is not None:
+            return zone
+        choice = self.ask_choice(
+            tr("dlg.addzone.title"),
+            tr("dlg.addzone.msg", name=name),
+            [(tr("btn.add"), "add"), (tr("dlg.addzone.outdoor"), "outdoor"), (tr("dlg.cancel"), None)],
+            default=0,
+            cancel=None,
+        )
+        if choice is None:
+            self.zone.focus_set()
+            return None
+        self.zones.append(name)
+        if choice == "outdoor":
+            self.outdoor.add(name.casefold())
+        if self._save_zone_defs():
+            self.info("status.zone_added", name=name)
+        return name
+
     def _zone_committed(self, text: str) -> None:
-        zone = zl.resolve_zone(text, self.zones)
+        if not text.strip():
+            self.error("err.zone_type", self.zone)
+            return
+        zone = self._resolve_or_add(text)
         if zone is None:
-            t = text.strip()
-            if t:
-                self.error("err.zone_unknown", self.zone, t=t)
-            else:
-                self.error("err.zone_type", self.zone)
             return
         self.zone.set(zone)
-        self.info("status.zone_selected", zone=zone)
+        self.info("status.zone_selected", zone=self.division(zone))
         (self.end if self.start.var.get().strip() else self.start).focus_set()
 
     def _start_enter(self, _e=None):
@@ -428,11 +525,11 @@ class App(tk.Tk):
 
     def submit(self, _e=None):
         zone_text = self.zone.var.get().strip()
-        zone = zl.resolve_zone(zone_text, self.zones)
-        if zone is None:
-            if zone_text:
-                return self.error("err.zone_not_in_list", self.zone, t=zone_text)
+        if not zone_text:
             return self.error("err.zone_pick", self.zone)
+        zone = self._resolve_or_add(zone_text)
+        if zone is None:
+            return "break"
         try:
             start = zl.normalize_zone(self.start.var.get(), "lbl.start")
         except zl.ZoneError as exc:
@@ -456,7 +553,7 @@ class App(tk.Tk):
                 self.start.focus_set()
                 return "break"
 
-        entry = zl.Entry(start, end, zone)
+        entry = zl.Entry(start, end, self.division(zone))
         self._push_history()
         if self.edit_index is None:
             prev = self.entries[-1] if self.entries else None
@@ -478,6 +575,7 @@ class App(tk.Tk):
             i = self.edit_index
             self.entries[i] = entry
             self.edit_index = None
+            self._restore_floor()
             self._refresh_texts()
             self._table_update(i)
             self.info("status.updated", n=i + 1, label=entry.label())
@@ -502,7 +600,14 @@ class App(tk.Tk):
         previous = self.edit_index
         e = self.entries[index]
         self.edit_index = index
-        self.zone.set(e.zone)
+        if self._floor_before_edit is None:
+            self._floor_before_edit = self.floor.get()
+        if zl.resolve_zone(e.zone, self.zones) is not None:  # a zone that really is called "EG Lager"
+            floor, base = "", e.zone
+        else:
+            floor, base = zl.split_floor(e.zone)
+        self.floor.set(floor)
+        self.zone.set(base)
         self.start.var.set(e.start)
         self.end.var.set(e.end)
         self._refresh_texts()
@@ -516,6 +621,7 @@ class App(tk.Tk):
         if self.edit_index is None:
             return
         i, self.edit_index = self.edit_index, None
+        self._restore_floor()
         self._refresh_texts()
         self.zone.clear()
         self._table_update(i)
@@ -542,6 +648,7 @@ class App(tk.Tk):
             return
         self.entries = self.history.pop()
         self.edit_index = None
+        self._restore_floor()
         self._refresh_texts()
         self.zone.clear()
         self.rebuild_table()
@@ -560,6 +667,8 @@ class App(tk.Tk):
             self._push_history()
         self.entries = []
         self.edit_index = None
+        self._floor_before_edit = None
+        self.floor.set("")
         self._refresh_texts()
         self.zone.clear()
         self.store.set("")
@@ -571,16 +680,13 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------ zone list
     def edit_zone_list(self) -> None:
-        def save(zones: list[str]) -> None:
-            self.zones = zones
-            try:
-                zl.save_zones(self.data_dir, zones)
-            except OSError as exc:
-                self.error("status.zones_save_failed", err=str(exc))
-                return
-            self.info("status.zones_saved", n=len(zones))
+        def save(defs: list[zl.ZoneDef]) -> None:
+            self.zones = [name for name, _ in defs]
+            self.outdoor = {name.casefold() for name, is_out in defs if is_out}
+            if self._save_zone_defs():
+                self.info("status.zones_saved", n=len(self.zones))
 
-        ZoneListDialog(self, self.zones, zl.DEFAULT_STORE_ZONES, save)
+        ZoneListDialog(self, self._zone_defs(), zl.default_zone_defs(), save)
 
     # -------------------------------------------------------------- Excel I/O
     def _initial_dir(self) -> str:
@@ -646,15 +752,16 @@ class App(tk.Tk):
         known = {z.casefold() for z in self.zones}
         new_zones = []
         for e in entries:
-            if e.zone and e.zone.casefold() not in known:
-                known.add(e.zone.casefold())
-                new_zones.append(e.zone)
+            # "EG Sanitär" in a file means zone "Sanitär" on floor EG; the list holds the bare names
+            name = e.zone if e.zone.casefold() in known else zl.split_floor(e.zone)[1]
+            if name and name.casefold() not in known:
+                known.add(name.casefold())
+                new_zones.append(name)
+                if zl.looks_outdoor(name):
+                    self.outdoor.add(name.casefold())
         if new_zones:
             self.zones.extend(new_zones)
-            try:
-                zl.save_zones(self.data_dir, self.zones)
-            except OSError:
-                pass
+            self._save_zone_defs()
         self._push_history()
         self.cancel_edit()
         self.entries = entries
@@ -691,7 +798,7 @@ class App(tk.Tk):
                 pass
             self._save_job = None
         try:
-            zl.save_session(self.data_dir, self.store.get(), self.entries, self.last_dir)
+            zl.save_session(self.data_dir, self.store.get(), self.entries, self.last_dir, self.sticky_floor())
         except OSError:
             pass  # never interrupt data entry because autosave failed
 

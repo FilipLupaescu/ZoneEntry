@@ -71,6 +71,31 @@ So a typical row is just: `kas` ⏎ `42` ⏎
 * Zone numbers are 4 digits, `0001` to `9999`. Short input is padded automatically (`7` becomes `0007`).
 * The **store name** at the top is only used for the suggested file name when you export.
 
+**Floors (EG / OG)**
+
+Some stores have an upper floor. The **Floor** buttons next to Store Zone are **EG**, **OG** and **–** (no floor).
+Pick one and it stays selected, so you can count a whole floor without touching it again. New rows get the floor in front of the zone name, exactly like this in the Excel file: `EG Sanitär`, `OG Deko`.
+
+* Single-floor store? Leave it on **–**, nothing is added.
+* Switch with **Ctrl+1** (EG), **Ctrl+2** (OG) or **Ctrl+0** (none), or click the button.
+* **Outdoor zones** (Garten, Außenbereich …) never get a floor, even while OG is selected.
+* Editing a row (F2) shows that row's own floor; afterwards the floor you were counting on is back.
+* **New store** resets the floor to **–**.
+
+**Zones that are not in the list**
+
+Every store is different. Type the new name in Store Zone and press Enter: ZoneEntry asks
+*"Add it to the list?"* Press Enter again to add it, or choose **Add as outdoor zone** for a zone that should never get EG/OG.
+Cancel with Esc if it was only a typo. A name typed in lower case gets capital letters (`garten links` becomes `Garten Links`).
+
+In **Zone list…** you can also edit the list by hand:
+
+| You write | You get |
+|---|---|
+| `*Garten` | an outdoor zone (never gets EG/OG) |
+| `Garten {Links\|Rechts}` | the two zones `Garten Links` and `Garten Rechts` |
+| `*Garten {Links\|Rechts}` | the same two, both outdoor |
+
 **The buttons**
 
 | Button | What it does |
@@ -101,6 +126,7 @@ So a typical row is just: `kas` ⏎ `42` ⏎
 | **↑ ↓** | Move through the suggestions |
 | **Tab / Shift+Tab** | Next / previous field |
 | **Esc** | Close the suggestions · cancel editing |
+| **Ctrl+1 / Ctrl+2 / Ctrl+0** | Floor for new rows: EG / OG / none |
 | **F2** (or double-click) | Edit the selected row |
 | **Delete** | Delete the selected rows |
 | **Ctrl+Z** | Undo |
@@ -152,6 +178,7 @@ The suggested file name is `ZoneUpdate_<store name>_<date>.xlsx`.
 | The window looks cut off on a small screen | Maximise it. ZoneEntry adapts to screens as small as 1366 × 768. |
 | Wrong language | Click the globe button and choose another one. |
 | Slow to start on an old PC | Use the installer (not the zip on a network drive or USB stick), and ask IT to exclude the install folder from real-time virus scanning. |
+| A zone got the wrong floor, or an outdoor zone got EG/OG | Outdoor zones are marked with `*` in **Zone list…** (for example `*Garten`). Add or remove the `*`; existing rows are not changed. |
 
 ---
 
@@ -244,7 +271,12 @@ To build on your own PC instead, install Python 3.12 (and optionally [Inno Setup
 
 ---
 
-## What's new in 1.1.1 (and 1.1.0)
+## What's new in 1.3.0
+
+* EG / OG floor selector with hotkeys; outdoor zones never get a floor
+* Unknown zones can be added on the fly; `Garten {Links|Rechts}` shorthand in the zone list
+
+## What's new in 1.2.0 (and 1.1.0)
 
 * Language button with five languages; the whole interface is translated
 * "New store" button for the next day (warns if the count was not exported)

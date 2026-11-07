@@ -285,35 +285,158 @@ def app_data_dir() -> Path:
     return p
 
 
-def parse_zone_lines(text: str) -> list[str]:
-    """One zone per line; blank lines, '#' comments and duplicates are ignored."""
-    seen: set[str] = set()
+FLOORS = ("EG", "OG")  # the floor prefixes the selector offers (none = no prefix)
+OUTDOOR_MARK = "*"  # in zones.txt: "*Garten" = outdoor zone, never gets a floor prefix
+ZONES_FORMAT_LINE = "# zoneentry-format: 2"
+ZONES_HEADER = (
+    ZONES_FORMAT_LINE,
+    "# One Store Zone per line. A * in front marks an outdoor zone (it never gets the EG/OG prefix).",
+    "# 'Garten {Links|Rechts}' is shorthand for the two zones 'Garten Links' and 'Garten Rechts'.",
+)
+_BRACES = re.compile(r"\{([^{}]*)\}")
+_OUTDOOR_WORDS = ("garten", "außenbereich", "aussenbereich")
+
+ZoneDef = tuple[str, bool]  # (name, is_outdoor)
+
+
+def looks_outdoor(name: str) -> bool:
+    """Default rule for the built-in list and for upgrading an old zones.txt."""
+    return name.strip().casefold().startswith(_OUTDOOR_WORDS)
+
+
+def expand_braces(name: str) -> list[str]:
+    """'Garten {Links|Rechts}' -> ['Garten Links', 'Garten Rechts'] (several {..} groups multiply)."""
+    m = _BRACES.search(name)
+    if not m:
+        return [" ".join(name.split())]
+    options = [o.strip() for o in m.group(1).split("|")]
     out: list[str] = []
-    for line in text.splitlines():
-        name = line.strip()
-        if not name or name.startswith("#"):
-            continue
-        key = name.casefold()
-        if key not in seen:
-            seen.add(key)
-            out.append(name)
+    for opt in options:
+        out.extend(expand_braces(name[: m.start()] + opt + name[m.end() :]))
     return out
 
 
+def default_zone_defs() -> list[ZoneDef]:
+    return [(z, looks_outdoor(z)) for z in DEFAULT_STORE_ZONES]
+
+
+def parse_zone_defs(text: str) -> list[ZoneDef]:
+    """One zone per line; '*' = outdoor, {A|B} expands, blank lines / '#' comments / duplicates ignored."""
+    seen: set[str] = set()
+    out: list[ZoneDef] = []
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        outdoor = raw.startswith(OUTDOOR_MARK)
+        if outdoor:
+            raw = raw[len(OUTDOOR_MARK) :].strip()
+        for name in expand_braces(raw):
+            key = name.casefold()
+            if name and key not in seen:
+                seen.add(key)
+                out.append((name, outdoor))
+    return out
+
+
+def parse_zone_lines(text: str) -> list[str]:
+    """Just the names of parse_zone_defs()."""
+    return [name for name, _ in parse_zone_defs(text)]
+
+
+def format_zone_defs(defs: Iterable[ZoneDef]) -> list[str]:
+    return [(OUTDOOR_MARK if outdoor else "") + name for name, outdoor in defs]
+
+
+def save_zone_defs(folder: Path, defs: Sequence[ZoneDef]) -> None:
+    lines = [*ZONES_HEADER, *format_zone_defs(defs)]
+    (folder / "zones.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def save_zones(folder: Path, zones: Sequence[str]) -> None:
-    (folder / "zones.txt").write_text("\n".join(zones) + "\n", encoding="utf-8")
+    """Plain names (no outdoor marks)."""
+    save_zone_defs(folder, [(z, False) for z in zones])
+
+
+def load_zone_defs(folder: Path) -> list[ZoneDef]:
+    path = folder / "zones.txt"
+    if not path.exists():
+        defs = default_zone_defs()
+        save_zone_defs(folder, defs)
+        return defs
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+        defs = parse_zone_defs(text)
+    except (OSError, UnicodeDecodeError):
+        return default_zone_defs()
+    if not defs:
+        return default_zone_defs()
+    if ZONES_FORMAT_LINE not in text:
+        # a zones.txt from version 1.0 / 1.1: add the outdoor marks once, keep the user's own names
+        defs = [(name, outdoor or looks_outdoor(name)) for name, outdoor in defs]
+        try:
+            save_zone_defs(folder, defs)
+        except OSError:
+            pass
+    return defs
 
 
 def load_zones(folder: Path) -> list[str]:
-    path = folder / "zones.txt"
-    if not path.exists():
-        save_zones(folder, DEFAULT_STORE_ZONES)
-        return list(DEFAULT_STORE_ZONES)
+    return [name for name, _ in load_zone_defs(folder)]
+
+
+def split_floor(division: str) -> tuple[str, str]:
+    """'OG Sanitär' -> ('OG', 'Sanitär');  'Garten' -> ('', 'Garten')."""
+    for floor in FLOORS:
+        if division.startswith(floor + " "):
+            return floor, division[len(floor) + 1 :].lstrip()
+    return "", division
+
+
+def with_floor(floor: str, zone: str, outdoor: bool) -> str:
+    """The text for the Division column: 'EG Sanitär', or just the zone if no floor / outdoor zone."""
+    return f"{floor} {zone}" if floor in FLOORS and not outdoor else zone
+
+
+def tidy_new_zone_name(text: str) -> str:
+    """A zone typed in all lower case gets a capital letter per word ('garten links' -> 'Garten Links')."""
+    t = " ".join(text.split())
+    return t.title() if t and t == t.lower() else t
+
+
+def save_session(
+    folder: Path, store: str, entries: Sequence[Entry], last_dir: str = "", floor: str = ""
+) -> None:
+    """Autosave so a crash or closed window never loses a count."""
+    data = {
+        "version": 1,
+        "store": store,
+        "last_dir": last_dir,
+        "floor": floor if floor in FLOORS else "",
+        "entries": [[e.start, e.end, e.zone] for e in entries],
+    }
+    path = folder / "session.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_session(folder: Path) -> dict:
+    """Returns {'store', 'last_dir', 'floor', 'entries'}; falls back to empty on any problem."""
+    result: dict = {"store": "", "last_dir": "", "floor": "", "entries": []}
     try:
-        zones = parse_zone_lines(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeDecodeError):
-        zones = []
-    return zones or list(DEFAULT_STORE_ZONES)
+        data = json.loads((folder / "session.json").read_text(encoding="utf-8"))
+        result["store"] = str(data.get("store", ""))
+        result["last_dir"] = str(data.get("last_dir", ""))
+        floor = str(data.get("floor", ""))
+        result["floor"] = floor if floor in FLOORS else ""
+        for s, e, z in data.get("entries", []):
+            s, e = normalize_zone(s), normalize_zone(e)
+            if int(s) <= int(e):
+                result["entries"].append(Entry(s, e, str(z)))
+    except (OSError, ValueError, TypeError):  # ZoneError is a ValueError
+        pass
+    return result
 
 
 def load_settings(folder: Path) -> dict:
@@ -330,38 +453,6 @@ def load_settings(folder: Path) -> dict:
 
 def save_settings(folder: Path, settings: dict) -> None:
     (folder / "settings.json").write_text(json.dumps(settings, indent=1), encoding="utf-8")
-
-
-def save_session(
-    folder: Path, store: str, entries: Sequence[Entry], last_dir: str = ""
-) -> None:
-    """Autosave so a crash or closed window never loses a count."""
-    data = {
-        "version": 1,
-        "store": store,
-        "last_dir": last_dir,
-        "entries": [[e.start, e.end, e.zone] for e in entries],
-    }
-    path = folder / "session.json"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def load_session(folder: Path) -> dict:
-    """Returns {'store', 'last_dir', 'entries'}; falls back to empty on any problem."""
-    result: dict = {"store": "", "last_dir": "", "entries": []}
-    try:
-        data = json.loads((folder / "session.json").read_text(encoding="utf-8"))
-        result["store"] = str(data.get("store", ""))
-        result["last_dir"] = str(data.get("last_dir", ""))
-        for s, e, z in data.get("entries", []):
-            s, e = normalize_zone(s), normalize_zone(e)
-            if int(s) <= int(e):
-                result["entries"].append(Entry(s, e, str(z)))
-    except (OSError, ValueError, TypeError):  # ZoneError is a ValueError
-        pass
-    return result
 
 
 # =============================================================================

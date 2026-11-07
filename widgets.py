@@ -283,20 +283,28 @@ def ask(parent, kind: str, title: str, message: str, default_yes: bool = True) -
     return bool(ModalDialog(parent, title, message, buttons, default, cancel, glyph).result)
 
 
-class ZoneListDialog(tk.Toplevel):
-    """Edit the predefined Store Zone list (one name per line)."""
+def ask_choice(parent, title: str, message: str, buttons: list[tuple[str, object]], default: int = 0, cancel=None):
+    """A question with any number of buttons; returns the value of the pressed one (or `cancel`)."""
+    return ModalDialog(parent, title, message, buttons, default, cancel, "question").result
 
-    def __init__(self, master, zones, defaults, on_save):
+
+class ZoneListDialog(tk.Toplevel):
+    """Edit the predefined Store Zone list (one name per line; '*' in front = outdoor zone)."""
+
+    def __init__(self, master, zone_defs, default_defs, on_save):
+        """zone_defs / default_defs: lists of (name, is_outdoor); on_save gets the edited list of the same shape."""
         super().__init__(master)
         self.withdraw()
         self.title(tr("zl.title"))
         self.transient(master)
         px = master.px
         self._on_save = on_save
-        self._defaults = defaults
+        self._defaults = default_defs
         self._master = master
 
-        ttk.Label(self, text=tr("zl.help"), padding=(px(12), px(10), px(12), px(4)), wraplength=px(380)).pack(anchor="w")
+        ttk.Label(
+            self, text=tr("zl.help") + "\n" + tr("zl.help2", example="Garten {Links|Rechts}"), padding=(px(12), px(10), px(12), px(4)), wraplength=px(420), justify="left"
+        ).pack(anchor="w")
         frame = ttk.Frame(self, padding=(px(12), 0))
         frame.pack(fill="both", expand=True)
         self.text = tk.Text(frame, wrap="none", undo=True, font=master.big, width=28, height=16)
@@ -304,7 +312,7 @@ class ZoneListDialog(tk.Toplevel):
         self.text.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.text.pack(side="left", fill="both", expand=True)
-        self.text.insert("1.0", "\n".join(zones))
+        self.text.insert("1.0", "\n".join(zl.format_zone_defs(zone_defs)))
 
         bar = ttk.Frame(self, padding=px(12))
         bar.pack(fill="x")
@@ -325,14 +333,14 @@ class ZoneListDialog(tk.Toplevel):
 
     def _reset(self):
         self.text.delete("1.0", "end")
-        self.text.insert("1.0", "\n".join(self._defaults))
+        self.text.insert("1.0", "\n".join(zl.format_zone_defs(self._defaults)))
 
     def _save(self):
-        zones = zl.parse_zone_lines(self.text.get("1.0", "end"))
-        if not zones:
+        defs = zl.parse_zone_defs(self.text.get("1.0", "end"))
+        if not defs:
             ask(self, "warning", tr("zl.title"), tr("zl.empty"))
             return
-        self._on_save(zones)
+        self._on_save(defs)
         self.destroy()
 
 
@@ -463,6 +471,7 @@ class HelpPopup:
             ("Esc", "hk.esc"),
             ("F2", "hk.f2"),
             (tr("key.del"), "hk.del"),
+            (f"{ctrl}+1  /  {ctrl}+2  /  {ctrl}+0", "hk.floor"),
             (f"{ctrl}+Z", "hk.undo"),
             (f"{ctrl}+S", "hk.export"),
             ("F1", "hk.f1"),

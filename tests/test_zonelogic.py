@@ -208,4 +208,77 @@ def test_session_roundtrip_and_corruption(tmp_path):
     assert s["store"] == "Markt Köln" and s["entries"] == rows and s["last_dir"] == "/tmp"
 
     (tmp_path / "session.json").write_text("{not json", encoding="utf-8")
-    assert zl.load_session(tmp_path) == {"store": "", "last_dir": "", "entries": []}
+    assert zl.load_session(tmp_path) == {"store": "", "last_dir": "", "floor": "", "entries": []}
+
+
+# ================================================================ floors, outdoor zones, zones.txt
+def test_expand_braces_and_parse_zone_defs():
+    assert zl.expand_braces("Garten {Links|Rechts}") == ["Garten Links", "Garten Rechts"]
+    assert zl.expand_braces("{EG|OG} Lager") == ["EG Lager", "OG Lager"]
+    assert zl.expand_braces("A {1|2} B {x|y}") == ["A 1 B x", "A 1 B y", "A 2 B x", "A 2 B y"]
+    assert zl.expand_braces("Plain  name") == ["Plain name"]
+    defs = zl.parse_zone_defs("*Garten {Links|Rechts}\nSanitär\n# comment\n\nsanitär\n  * Terrasse \n")
+    assert defs == [("Garten Links", True), ("Garten Rechts", True), ("Sanitär", False), ("Terrasse", True)]
+    assert zl.parse_zone_lines("*Garten\nHolz") == ["Garten", "Holz"]
+
+
+def test_floor_helpers():
+    assert zl.FLOORS == ("EG", "OG")
+    assert zl.with_floor("OG", "Sanitär", False) == "OG Sanitär"
+    assert zl.with_floor("OG", "Garten", True) == "Garten"
+    assert zl.with_floor("", "Sanitär", False) == "Sanitär"
+    assert zl.with_floor("XX", "Sanitär", False) == "Sanitär"  # unknown floors are ignored
+    assert zl.split_floor("OG Sanitär") == ("OG", "Sanitär")
+    assert zl.split_floor("EG  Sanitär") == ("EG", "Sanitär")
+    assert zl.split_floor("EGAL Sanitär") == ("", "EGAL Sanitär")
+    assert zl.split_floor("Garten") == ("", "Garten")
+    assert zl.split_floor("OG") == ("", "OG")
+    for z in ("Sanitär", "OG Deko", "Laminat\\Fliesen"):
+        f, b = zl.split_floor(zl.with_floor("EG", z, False)) if not z.startswith("OG") else ("", z)
+        assert zl.with_floor(f, b, False) in (z, "EG " + z)
+
+
+def test_tidy_new_zone_name():
+    assert zl.tidy_new_zone_name("garten links") == "Garten Links"
+    assert zl.tidy_new_zone_name("  außenbereich   neu ") == "Außenbereich Neu"
+    assert zl.tidy_new_zone_name("Laminat\\Fliesen") == "Laminat\\Fliesen"
+    assert zl.tidy_new_zone_name("DIY Bereich") == "DIY Bereich"  # already has capitals: left alone
+    assert zl.tidy_new_zone_name("") == ""
+
+
+def test_default_outdoor_zones():
+    out = {n for n, o in zl.default_zone_defs() if o}
+    assert out == {"Garten Grill", "Garten Wand", "Garten", "Außenbereich Wand", "Außenbereich"}
+    assert zl.looks_outdoor("Garten Links") and zl.looks_outdoor("aussenbereich Süd") and not zl.looks_outdoor("Sanitär")
+
+
+def test_zone_defs_roundtrip_and_header(tmp_path):
+    zl.save_zone_defs(tmp_path, [("Sanitär", False), ("Garten", True)])
+    text = (tmp_path / "zones.txt").read_text(encoding="utf-8")
+    assert text.splitlines()[0] == zl.ZONES_FORMAT_LINE and "*Garten" in text.splitlines()
+    assert zl.load_zone_defs(tmp_path) == [("Sanitär", False), ("Garten", True)]
+
+
+def test_old_zones_file_is_upgraded_once(tmp_path):
+    (tmp_path / "zones.txt").write_text("Sanitär\nGarten\nGarten Links\nMein Bereich\nAußenbereich\n", encoding="utf-8")
+    defs = zl.load_zone_defs(tmp_path)
+    assert defs == [("Sanitär", False), ("Garten", True), ("Garten Links", True), ("Mein Bereich", False), ("Außenbereich", True)]
+    text = (tmp_path / "zones.txt").read_text(encoding="utf-8")
+    assert zl.ZONES_FORMAT_LINE in text and "*Garten Links" in text.splitlines()
+    # the person's own edits after the upgrade are respected: un-marking Garten sticks
+    (tmp_path / "zones.txt").write_text(text.replace("*Garten\n", "Garten\n"), encoding="utf-8")
+    assert ("Garten", False) in zl.load_zone_defs(tmp_path)
+
+
+def test_first_run_zones_file_has_the_default_outdoor_marks(tmp_path):
+    assert zl.load_zone_defs(tmp_path) == zl.default_zone_defs()
+    assert "*Außenbereich" in (tmp_path / "zones.txt").read_text(encoding="utf-8").splitlines()
+
+
+def test_session_remembers_the_floor(tmp_path):
+    zl.save_session(tmp_path, "Markt", [], "", "OG")
+    assert zl.load_session(tmp_path)["floor"] == "OG"
+    zl.save_session(tmp_path, "Markt", [], "", "XX")
+    assert zl.load_session(tmp_path)["floor"] == ""
+    (tmp_path / "session.json").write_text('{"store": "M", "entries": []}', encoding="utf-8")  # an old v1.1 file
+    assert zl.load_session(tmp_path)["floor"] == ""
