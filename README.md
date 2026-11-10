@@ -106,7 +106,22 @@ In **Zone list…** you can also edit the list by hand:
 | **🌐 Language** | Choose the language of the program |
 | **?** | Hover for a quick guide with all hotkeys. Click it (or press F1) to keep it open |
 | **Edit / Delete / Undo** | Fix mistakes. Or double-click a row to edit it |
-| **Export to Excel…** | Save everything as an `.xlsx` file |
+| **Export update 3 (12)** | Saves **only the new rows** (the green ones) as a file of their own, then closes that update. The next rows you add become update 4. The file name ends with the update number. |
+| **Export all** | Saves **every row** in one file, without a number. It doesn't change any update. |
+
+**Updates**
+
+Every export is a separate file, so the system only gets what is new and never overwrites changes somebody made to zones you sent earlier.
+
+* The **Update** column shows which export a row belongs to. The number appears once per block of rows.
+* **Green rows** have not been exported yet. They are what the next **Export update** will contain.
+* File names: `ZoneUpdate_<store>_<date>_1.xlsx`, `…_2.xlsx` and so on. **Export all** has no number: `ZoneUpdate_<store>_<date>.xlsx`.
+* **Click a number** in the Update column to export exactly that update. For an earlier update this saves a fresh copy of those rows and changes nothing else.
+* **Changed a row after it was exported?** It is moved into the next update, so only the corrected row goes out again. (Opening a row and saving it without changes does nothing.)
+* **Import** counts the imported rows as already exported (update 1).
+* **New store** starts again at update 1.
+* **Undo** can't go back across an export, because those rows are out.
+* Numbers are never reused, even if you delete all rows of an update.
 
 **Safety nets**
 
@@ -130,7 +145,8 @@ In **Zone list…** you can also edit the list by hand:
 | **F2** (or double-click) | Edit the selected row |
 | **Delete** | Delete the selected rows |
 | **Ctrl+Z** | Undo |
-| **Ctrl+S** | Export to Excel |
+| **Ctrl+S** | Export update (the new rows) |
+| **Ctrl+Shift+S** | Export all |
 | **F1** | Show / hide the quick guide |
 
 ---
@@ -161,7 +177,8 @@ Exported files use exactly this layout, so downstream tools keep working:
 * All cells are **text**, so `0042` keeps its leading zeros (they are not turned into the number 42)
 * Font Aptos Narrow 11 and the usual column widths
 
-The suggested file name is `ZoneUpdate_<store name>_<date>.xlsx`.
+The suggested file name is `ZoneUpdate_<store name>_<date>.xlsx`; an update file gets its number at the end, e.g. `ZoneUpdate_<store name>_<date>_2.xlsx`.
+Every file has exactly the layout above. The Update column exists only in the app and is not written to Excel.
 
 ---
 
@@ -179,6 +196,8 @@ The suggested file name is `ZoneUpdate_<store name>_<date>.xlsx`.
 | Wrong language | Click the globe button and choose another one. |
 | Slow to start on an old PC | Use the installer (not the zip on a network drive or USB stick), and ask IT to exclude the install folder from real-time virus scanning. |
 | A zone got the wrong floor, or an outdoor zone got EG/OG | Outdoor zones are marked with `*` in **Zone list…** (for example `*Garten`). Add or remove the `*`; existing rows are not changed. |
+| "No new rows since update N" | Everything has been exported already. Add rows, or use **Export all**, or click an update number to export that update again. |
+| I exported a file by mistake or lost it | Click the update number in the **Update** column and export it again. |
 
 ---
 
@@ -189,8 +208,9 @@ Everything stays on your PC, in `%APPDATA%\ZoneEntry` (paste that into the Explo
 | File | Contents |
 |---|---|
 | `zones.txt` | Your Store Zone list. Plain text, one name per line. Delete it to get the default list back |
-| `session.json` | Your current rows, store name and last export folder (the autosave) |
+| `session.json` | Your current rows with their update numbers, store name, floor and last export folder (the autosave) |
 | `settings.json` | The chosen language |
+
 
 ---
 
@@ -270,6 +290,10 @@ To build on your own PC instead, install Python 3.12 (and optionally [Inno Setup
 * **Icons:** `pip install pillow`, then `python tools/make_assets.py`.
 
 ---
+
+## What's new in 1.4.0
+* Every export is a separate numbered file with only the new rows; **Export all** for everything
+* **Update** column, green rows for what is not exported yet, click a number to export that update
 
 ## What's new in 1.3.0
 

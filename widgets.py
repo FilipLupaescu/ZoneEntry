@@ -474,6 +474,7 @@ class HelpPopup:
             (f"{ctrl}+1  /  {ctrl}+2  /  {ctrl}+0", "hk.floor"),
             (f"{ctrl}+Z", "hk.undo"),
             (f"{ctrl}+S", "hk.export"),
+            (f"{ctrl}+Shift+S", "hk.export_all"),
             ("F1", "hk.f1"),
         ]
         for r, (cap, key) in enumerate(keys):
@@ -484,7 +485,7 @@ class HelpPopup:
                 row=r, column=1, sticky="w"
             )
         row += 1
-        tk.Label(box, text=tr("help.note"), font=app.small, bg=bg, fg="#555555", anchor="w", justify="left", wraplength=wrap + px(30)).grid(
+        tk.Label(box, text=tr("help.note") + "\n" + tr("help.note2"), font=app.small, bg=bg, fg="#555555", anchor="w", justify="left", wraplength=wrap + px(30)).grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(px(10), 0)
         )
 

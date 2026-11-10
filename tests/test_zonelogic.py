@@ -208,7 +208,7 @@ def test_session_roundtrip_and_corruption(tmp_path):
     assert s["store"] == "Markt Köln" and s["entries"] == rows and s["last_dir"] == "/tmp"
 
     (tmp_path / "session.json").write_text("{not json", encoding="utf-8")
-    assert zl.load_session(tmp_path) == {"store": "", "last_dir": "", "floor": "", "entries": []}
+    assert zl.load_session(tmp_path) == {"store": "", "last_dir": "", "floor": "", "last_update": 0, "entries": []}
 
 
 # ================================================================ floors, outdoor zones, zones.txt
@@ -282,3 +282,39 @@ def test_session_remembers_the_floor(tmp_path):
     assert zl.load_session(tmp_path)["floor"] == ""
     (tmp_path / "session.json").write_text('{"store": "M", "entries": []}', encoding="utf-8")  # an old v1.1 file
     assert zl.load_session(tmp_path)["floor"] == ""
+
+
+# ================================================================ updates (exports that only carry the new rows)
+def test_update_file_names_carry_the_number_at_the_end():
+    from datetime import date
+
+    d = date(2026, 11, 10)
+    assert zl.default_export_name("Hornbach Köln", d) == "ZoneUpdate_Hornbach_Köln_2026-11-10.xlsx"
+    assert zl.default_export_name("Hornbach Köln", d, update=3) == "ZoneUpdate_Hornbach_Köln_2026-11-10_3.xlsx"
+    assert zl.default_export_name("", d, update=2) == "ZoneUpdate_2026-11-10_2.xlsx"
+    assert zl.default_export_name("A/B", d, update=None) == "ZoneUpdate_AB_2026-11-10.xlsx"
+
+
+def test_next_update_number_and_pending_rows():
+    rows = [zl.Entry("0001", "0010", "A", 1), zl.Entry("0011", "0020", "B", 2), zl.Entry("0021", "0030", "C", 0)]
+    assert zl.next_update_number([]) == 1
+    assert zl.next_update_number(rows) == 3
+    assert zl.next_update_number(rows[:1], last_update=4) == 5  # numbers are never handed out twice
+    assert zl.pending_entries(rows) == [rows[2]]
+    assert zl.Entry("0001", "0002", "X") == zl.Entry("0001", "0002", "X", 0)
+
+
+def test_session_keeps_update_numbers_and_reads_old_files_as_not_exported(tmp_path):
+    rows = [zl.Entry("0001", "0010", "A", 1), zl.Entry("0011", "0020", "B", 0)]
+    zl.save_session(tmp_path, "Markt", rows, "", "", 1)
+    s = zl.load_session(tmp_path)
+    assert s["entries"] == rows and s["last_update"] == 1
+    # a session file from 1.3 or older: three values per row, no last_update
+    (tmp_path / "session.json").write_text(
+        '{"store": "M", "entries": [["0001", "0010", "A"], ["0011", "0020", "B"]]}', encoding="utf-8"
+    )
+    s = zl.load_session(tmp_path)
+    assert [e.update for e in s["entries"]] == [0, 0] and s["last_update"] == 0
+    (tmp_path / "session.json").write_text('{"entries": [["0001", "0010", "A", -5]], "last_update": -2}', encoding="utf-8")
+    s = zl.load_session(tmp_path)
+    assert s["entries"][0].update == 0 and s["last_update"] == 0

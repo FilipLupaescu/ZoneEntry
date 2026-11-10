@@ -64,15 +64,20 @@ def add_row(app, zone_text, end, start=None):
 
 
 def table_matches_entries(app) -> bool:
-    """The Treeview shows exactly the entries, with the right striping."""
+    """The Treeview shows exactly the entries: update number once per block, striping, green for new rows."""
     ids = list(app.tree.get_children())
     if len(ids) != len(app.entries):
         return False
+    nxt = zl.next_update_number(app.entries, app.last_update)
+    prev = None
     for i, (iid, e) in enumerate(zip(ids, app.entries)):
-        row = [app.tree.set(iid, c) for c in ("n", "from", "to", "zone", "count")]
-        if row != [str(i + 1), e.start, e.end, e.zone, str(e.count)]:
+        n = e.update or nxt
+        label = str(n) if n != prev else ""
+        prev = n
+        row = [app.tree.set(iid, c) for c in ("upd", "n", "from", "to", "zone", "count")]
+        if row != [label, str(i + 1), e.start, e.end, e.zone, str(e.count)]:
             return False
-        want = "editing" if i == app.edit_index else ("odd" if i % 2 else "even")
+        want = "editing" if i == app.edit_index else ("pending" if e.update == 0 else ("odd" if i % 2 else "even"))
         if tuple(app.tree.item(iid, "tags")) != (want,):
             return False
     return True
@@ -268,8 +273,9 @@ def test_language_switch_retranslates_everything_but_keeps_data(app):
         assert app.lang_btn.cget("text") == name  # the chosen language, next to the globe
         assert app.title() == tr("app.title", version=__version__)
         assert app.add_btn.cget("text") == tr("btn.add") + "  ⏎"
-        assert app.export_btn.cget("text").startswith(tr("btn.export"))
-        for col, key in (("from", "col.from"), ("to", "col.to"), ("zone", "col.zone"), ("count", "col.count")):
+        assert app.export_btn.cget("text") == f"{tr('btn.export_update', n=1, rows=1)}  ({app.ctrl_name()}+S)"
+        assert app.export_all_btn.cget("text") == tr("btn.export_all")
+        for col, key in (("upd", "col.update"), ("from", "col.from"), ("to", "col.to"), ("zone", "col.zone"), ("count", "col.count")):
             assert app.tree.heading(col, "text") == tr(key)
         assert app.hint.get() == tr("hint.suggest", start="0011", prev="0010")
         assert app.summary.get() == tr("summary.main", rows=1, lo="0001", hi="0010", zones=10)
@@ -570,7 +576,7 @@ def test_new_store_clears_rows_and_name_and_warns_until_exported(app, tmp_path, 
     app.undo()  # rows come back
     assert len(app.entries) == 1
     monkeypatch.setattr(appmod.filedialog, "asksaveasfilename", lambda **k: str(tmp_path / "x.xlsx"))
-    app.export()
+    app.export_update()
     app.new_list()  # exported -> no warning
     assert tr("dlg.new.unexported").strip() not in messages[-1]
     assert app.entries == []
@@ -743,7 +749,7 @@ def test_export_contains_the_prefixed_text(app, tmp_path, monkeypatch):
     add_row(app, "san", "10", start="1")
     out = tmp_path / "x.xlsx"
     monkeypatch.setattr(appmod.filedialog, "asksaveasfilename", lambda **k: str(out))
-    app.export()
+    app.export_update()
     ws = load_workbook(out).active
     assert [c.value for c in ws[2]] == ["0001", "0010", "EG Sanitär"]
 
@@ -753,4 +759,311 @@ def test_floor_selector_labels_and_buttons_in_every_language(app):
         app.set_language(code)
         app.update()
         assert [b.cget("text") for b in app.floor_buttons.values()] == ["–", "EG", "OG"]
+        assert app.winfo_reqwidth() <= app.winfo_screenwidth()
+
+
+# ================================================================ updates: every export is its own file
+@pytest.fixture()
+def saves(app, tmp_path, monkeypatch):
+    """Stands in for the Windows save dialog: records the suggested name, saves into tmp_path."""
+    names = []
+
+    def fake(**k):
+        names.append(k["initialfile"])
+        return str(tmp_path / k["initialfile"])
+
+    monkeypatch.setattr(appmod.filedialog, "asksaveasfilename", fake)
+    return names
+
+
+def rows_in(path):
+    from openpyxl import load_workbook
+
+    ws = load_workbook(path).active
+    return [tuple(c.value for c in r) for r in ws.iter_rows()]
+
+
+def fill(app, *rows):
+    """rows: (zone text, end[, start]) ..."""
+    for r in rows:
+        add_row(app, r[0], r[1], start=r[2] if len(r) > 2 else None)
+
+
+def test_new_rows_show_the_upcoming_update_number_once_per_block_and_are_green(app):
+    fill(app, ("kassen", "10", "1"), ("holz", "20"), ("deko", "30"))
+    assert [app.tree.set(i, "upd") for i in app.tree.get_children()] == ["1", "", ""]
+    assert all(tuple(app.tree.item(i, "tags")) == ("pending",) for i in app.tree.get_children())
+    assert app.export_btn.cget("text") == f"{tr('btn.export_update', n=1, rows=3)}  ({app.ctrl_name()}+S)"
+    assert str(app.export_btn.cget("state")) == "normal"
+
+
+def test_export_update_writes_only_the_new_rows_with_the_number_in_the_file_name(app, saves, tmp_path):
+    app.store.set("Köln")
+    fill(app, ("kassen", "10", "1"), ("holz", "20"))
+    app.export_update()
+    assert saves[-1].endswith("_1.xlsx") and saves[-1].startswith("ZoneUpdate_Köln_")
+    assert rows_in(tmp_path / saves[-1]) == [("from", "to", "Division"), ("0001", "0010", "Kassen"), ("0011", "0020", "Holz")]
+    assert [e.update for e in app.entries] == [1, 1] and app.last_update == 1
+    assert all(tuple(app.tree.item(i, "tags")) != ("pending",) for i in app.tree.get_children())
+    assert str(app.export_btn.cget("state")) == "disabled"  # nothing new
+
+    fill(app, ("deko", "30"), ("farben", "40"))  # the second batch
+    assert [app.tree.set(i, "upd") for i in app.tree.get_children()] == ["1", "", "2", ""]
+    app.export_update()
+    assert saves[-1].endswith("_2.xlsx")
+    assert rows_in(tmp_path / saves[-1]) == [("from", "to", "Division"), ("0021", "0030", "Deko"), ("0031", "0040", "Farben")]
+    assert [e.update for e in app.entries] == [1, 1, 2, 2]
+    assert "2" in app.status.get() and str(tmp_path) in app.status.get()
+
+
+def test_nothing_new_since_the_last_export_says_so_and_writes_nothing(app, saves):
+    messages = []
+    fill(app, ("kassen", "10", "1"))
+    app.export_update()
+    n_saves = len(saves)
+    app.ask = lambda kind, title, msg, default_yes=True: messages.append(msg) or True
+    app.export_update()
+    assert len(saves) == n_saves
+    assert messages == [tr("dlg.export.nothing_new", n=1)]
+    app.entries = []
+    app.rebuild_table()
+    app.export_update()
+    assert messages[-1] == tr("dlg.export.empty")
+
+
+def test_cancelled_or_failed_export_leaves_the_rows_new(app, tmp_path, monkeypatch):
+    fill(app, ("kassen", "10", "1"))
+    monkeypatch.setattr(appmod.filedialog, "asksaveasfilename", lambda **k: "")  # person pressed Cancel
+    app.export_update()
+    assert [e.update for e in app.entries] == [0] and app.last_update == 0
+
+    monkeypatch.setattr(appmod.filedialog, "asksaveasfilename", lambda **k: str(tmp_path / "x.xlsx"))
+    shown = []
+    app.ask = lambda kind, title, msg, default_yes=True: shown.append(kind) or True
+
+    def locked(*a, **k):
+        raise PermissionError("open in Excel")
+
+    monkeypatch.setattr(zl, "export_xlsx", locked)
+    app.export_update()
+    assert shown == ["error"] and [e.update for e in app.entries] == [0] and app.last_update == 0
+    assert not (tmp_path / "x.xlsx").exists()
+
+
+def test_export_all_writes_everything_without_a_number_and_changes_no_update(app, saves, tmp_path):
+    fill(app, ("kassen", "10", "1"), ("holz", "20"))
+    app.export_update()
+    fill(app, ("deko", "30"))
+    app.export_all()
+    name = saves[-1]
+    assert not name.endswith("_1.xlsx") and not name.endswith("_2.xlsx") and name.endswith(".xlsx")
+    assert [r[2] for r in rows_in(tmp_path / name)[1:]] == ["Kassen", "Holz", "Deko"]
+    assert [e.update for e in app.entries] == [1, 1, 0] and app.last_update == 1  # still waiting for update 2
+    asked = []
+    app.ask = lambda kind, title, msg, default_yes=True: asked.append(msg) or True
+    app.new_list()  # the confirmation comes without the "not exported yet!" warning: everything was exported
+    assert len(asked) == 1 and tr("dlg.new.unexported").strip() not in asked[0]
+    assert app.entries == []
+
+
+def test_export_all_with_no_rows_says_so(app, saves):
+    messages = []
+    app.ask = lambda kind, title, msg, default_yes=True: messages.append(msg) or True
+    app.export_all()
+    assert messages == [tr("dlg.export.empty")] and saves == []
+
+
+def test_hotkeys_ctrl_s_is_the_update_and_ctrl_shift_s_is_everything(app, saves):
+    fill(app, ("kassen", "10", "1"))
+    press(app.zone, "Control-s")
+    assert saves[-1].endswith("_1.xlsx")
+    fill(app, ("holz", "20"))
+    press(app.zone, "Control-S")
+    assert not saves[-1].endswith("_1.xlsx") and not saves[-1].endswith("_2.xlsx")
+    assert [e.update for e in app.entries] == [1, 0]
+    press(app.zone, "Control-e")  # old alias still exports the new rows
+    assert saves[-1].endswith("_2.xlsx")
+
+
+def test_undo_does_not_reach_back_across_an_export(app, saves):
+    fill(app, ("kassen", "10", "1"))
+    app.export_update()
+    assert app.history == []
+    app.undo()
+    assert len(app.entries) == 1 and app.status.get() == tr("status.nothing_undo")
+
+
+def test_update_numbers_never_repeat_even_if_a_whole_update_is_deleted(app, saves):
+    fill(app, ("kassen", "10", "1"))
+    app.export_update()
+    fill(app, ("holz", "20"))
+    app.export_update()
+    app.tree.selection_set("1")
+    app.delete_selected()  # all of update 2 gone
+    fill(app, ("deko", "30"))
+    app.export_update()
+    assert saves[-1].endswith("_3.xlsx")
+    assert [e.update for e in app.entries] == [1, 3]
+
+
+# ---------------------------------------------------------------- click a number
+def click_update_cell(app, row):
+    app.update()
+    x, y, w, h = app.tree.bbox(str(row), "upd")
+    app.tree.event_generate("<Button-1>", x=x + w // 2, y=y + h // 2)
+    app.update()
+
+
+def test_clicking_a_closed_update_number_exports_just_that_update_again(app, saves, tmp_path):
+    fill(app, ("kassen", "10", "1"), ("holz", "20"))
+    app.export_update()
+    fill(app, ("deko", "30"), ("farben", "40"))
+    app.export_update()
+    fill(app, ("garten", "50"))
+    state = (list(app.entries), app.last_update)
+    shown = []
+    app.ask_choice = lambda title, msg, buttons, default=0, cancel=None: shown.append((title, msg, [b for b, _ in buttons])) or True
+
+    click_update_cell(app, 3)  # the *empty* cell below the "2" belongs to update 2 as well
+    assert shown[-1][0] == tr("dlg.upd.title", n=2)
+    assert shown[-1][1] == tr("dlg.upd.msg_done", n=2, rows=2, lo="0021", hi="0040", next=3)
+    assert shown[-1][2] == [tr("dlg.upd.btn"), tr("dlg.cancel")]
+    assert saves[-1].endswith("_2.xlsx")
+    assert [r[2] for r in rows_in(tmp_path / saves[-1])[1:]] == ["Deko", "Farben"]
+    assert (list(app.entries), app.last_update) == state  # nothing changed in the app
+
+
+def test_clicking_the_new_rows_number_exports_and_closes_them(app, saves, tmp_path):
+    fill(app, ("kassen", "10", "1"))
+    app.export_update()
+    fill(app, ("holz", "20"), ("deko", "30"))
+    messages = []
+    app.ask_choice = lambda title, msg, buttons, default=0, cancel=None: messages.append(msg) or True
+    click_update_cell(app, 1)
+    assert messages[-1] == tr("dlg.upd.msg_open", n=2, rows=2, lo="0011", hi="0030", next=3)
+    assert saves[-1].endswith("_2.xlsx")
+    assert [e.update for e in app.entries] == [1, 2, 2] and app.last_update == 2
+
+
+def test_cancelling_the_update_window_does_nothing(app, saves):
+    fill(app, ("kassen", "10", "1"))
+    app.ask_choice = lambda *a, **k: False
+    click_update_cell(app, 0)
+    assert saves == [] and [e.update for e in app.entries] == [0]
+
+
+def test_clicking_elsewhere_is_not_an_update_click_and_double_click_on_it_does_not_edit(app, saves):
+    fill(app, ("kassen", "10", "1"))
+    app.ask_choice = lambda *a, **k: pytest.fail("no dialog expected")
+    app.update()
+    x, y, w, h = app.tree.bbox("0", "zone")
+    app.tree.event_generate("<Button-1>", x=x + 5, y=y + 5)  # a normal click only selects
+    app.update()
+    assert app.tree.selection() == ("0",)
+    app.ask_choice = lambda *a, **k: False
+    x, y, w, h = app.tree.bbox("0", "upd")
+    event = type("Event", (), {"x": x + 5, "y": y + 5})()  # Tk can't fake a <Double-1>, so call the handler
+    app._tree_double_click(event)
+    assert app.edit_index is None
+    x, y, w, h = app.tree.bbox("0", "zone")
+    app._tree_double_click(type("Event", (), {"x": x + 5, "y": y + 5})())  # on any other cell it does edit
+    assert app.edit_index == 0
+
+
+def test_the_mouse_turns_into_a_hand_over_the_update_numbers(app):
+    fill(app, ("kassen", "10", "1"))
+    app.update()
+    x, y, w, h = app.tree.bbox("0", "upd")
+    app.tree.event_generate("<Motion>", x=x + 5, y=y + 5)
+    assert str(app.tree.cget("cursor")) == "hand2"
+    x, y, w, h = app.tree.bbox("0", "zone")
+    app.tree.event_generate("<Motion>", x=x + 5, y=y + 5)
+    assert str(app.tree.cget("cursor")) == ""
+
+
+# ---------------------------------------------------------------- changing rows that already went out
+def test_changing_an_exported_row_sends_it_again_in_the_next_update(app, saves, tmp_path):
+    fill(app, ("kassen", "10", "1"), ("holz", "20"), ("deko", "30"))
+    app.export_update()
+    app.begin_edit(1)
+    app.end.var.set("15")
+    press(app.end, "Return")
+    assert [e.update for e in app.entries] == [1, 0, 1]
+    assert app.entries[1].end == "0015"
+    assert [app.tree.set(i, "upd") for i in app.tree.get_children()] == ["1", "2", "1"]
+    assert tr("status.moved_to_update", n=2) in app.status.get()
+    app.export_update()
+    assert saves[-1].endswith("_2.xlsx")
+    assert rows_in(tmp_path / saves[-1])[1:] == [("0011", "0015", "Holz")]  # only the corrected row
+
+
+def test_saving_an_exported_row_without_changes_keeps_it_in_its_update(app, saves):
+    fill(app, ("kassen", "10", "1"), ("holz", "20"))
+    app.export_update()
+    app.begin_edit(0)
+    press(app.end, "Return")
+    assert [e.update for e in app.entries] == [1, 1] and str(app.export_btn.cget("state")) == "disabled"
+
+
+def test_changing_a_new_row_keeps_it_new(app):
+    fill(app, ("kassen", "10", "1"))
+    app.begin_edit(0)
+    app.end.var.set("12")
+    press(app.end, "Return")
+    assert app.entries[0].update == 0 and "status.moved" not in app.status.get()
+
+
+# ---------------------------------------------------------------- persistence, import, new store
+def test_update_numbers_survive_a_restart(app, saves):
+    fill(app, ("kassen", "10", "1"))
+    app.export_update()
+    fill(app, ("holz", "20"))
+    app.flush_session()
+    second = appmod.App()
+    try:
+        assert [e.update for e in second.entries] == [1, 0] and second.last_update == 1
+        assert [second.tree.set(i, "upd") for i in second.tree.get_children()] == ["1", "2"]
+    finally:
+        second.destroy()
+
+
+def test_imported_rows_count_as_already_exported(app, tmp_path, monkeypatch, saves):
+    path = tmp_path / "in.xlsx"
+    zl.export_xlsx(path, [zl.Entry("0001", "0010", "Kassen"), zl.Entry("0011", "0020", "Holz")])
+    monkeypatch.setattr(appmod.filedialog, "askopenfilename", lambda **k: str(path))
+    app.import_file()
+    assert [e.update for e in app.entries] == [1, 1] and app.last_update == 1
+    assert tr("status.imported_as_sent") in app.status.get()
+    fill(app, ("deko", "30"))
+    assert [app.tree.set(i, "upd") for i in app.tree.get_children()] == ["1", "", "2"]
+    app.export_update()
+    assert saves[-1].endswith("_2.xlsx")
+
+
+def test_new_store_starts_again_at_update_1_and_undo_brings_the_numbers_back(app, saves):
+    app.ask = lambda *a, **k: True
+    fill(app, ("kassen", "10", "1"))
+    app.export_update()
+    fill(app, ("holz", "20"))
+    app.export_update()
+    app.new_list()
+    assert app.last_update == 0 and app.entries == []
+    fill(app, ("deko", "30", "1"))
+    assert app.tree.set("0", "upd") == "1"
+    app.export_update()
+    assert saves[-1].endswith("_1.xlsx")
+    app.new_list()
+    app.undo()  # the first store's rows come back with their update numbers
+    assert [e.update for e in app.entries] == [1]
+
+
+def test_update_column_and_buttons_exist_in_every_language_and_fit(app):
+    fill(app, ("kassen", "10", "1"))
+    for code in i18n.LANGUAGES:
+        app.set_language(code)
+        app.update()
+        assert app.tree.heading("upd", "text") == tr("col.update")
+        assert app.export_btn.winfo_reqwidth() >= app.export_btn.winfo_width() - 2
+        assert app.export_btn.winfo_ismapped() and app.export_all_btn.winfo_ismapped()
+        assert app.export_all_btn.winfo_rootx() + app.export_all_btn.winfo_width() <= app.export_btn.winfo_rootx() + 2
         assert app.winfo_reqwidth() <= app.winfo_screenwidth()

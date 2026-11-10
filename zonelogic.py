@@ -96,6 +96,7 @@ class Entry:
     start: str  # "0043"
     end: str  # "0056"
     zone: str  # "Mittelgang"
+    update: int = 0  # number of the Excel update this row went out in; 0 = not exported yet
 
     @property
     def first(self) -> int:
@@ -111,6 +112,16 @@ class Entry:
 
     def label(self) -> str:
         return f"{self.start}–{self.end}  {self.zone}"
+
+
+def next_update_number(entries: Iterable[Entry], last_update: int = 0) -> int:
+    """The number the next Excel update gets (updates are numbered 1, 2, 3 ... within one store)."""
+    return max(last_update, max((e.update for e in entries), default=0)) + 1
+
+
+def pending_entries(entries: Iterable[Entry]) -> list[Entry]:
+    """Rows that have not gone out in any update yet."""
+    return [e for e in entries if e.update == 0]
 
 
 # =============================================================================
@@ -405,7 +416,7 @@ def tidy_new_zone_name(text: str) -> str:
 
 
 def save_session(
-    folder: Path, store: str, entries: Sequence[Entry], last_dir: str = "", floor: str = ""
+    folder: Path, store: str, entries: Sequence[Entry], last_dir: str = "", floor: str = "", last_update: int = 0
 ) -> None:
     """Autosave so a crash or closed window never loses a count."""
     data = {
@@ -413,7 +424,8 @@ def save_session(
         "store": store,
         "last_dir": last_dir,
         "floor": floor if floor in FLOORS else "",
-        "entries": [[e.start, e.end, e.zone] for e in entries],
+        "last_update": max(0, int(last_update)),
+        "entries": [[e.start, e.end, e.zone, e.update] for e in entries],
     }
     path = folder / "session.json"
     tmp = path.with_suffix(".tmp")
@@ -422,18 +434,20 @@ def save_session(
 
 
 def load_session(folder: Path) -> dict:
-    """Returns {'store', 'last_dir', 'floor', 'entries'}; falls back to empty on any problem."""
-    result: dict = {"store": "", "last_dir": "", "floor": "", "entries": []}
+    """Returns {'store', 'last_dir', 'floor', 'last_update', 'entries'}; falls back to empty on any problem."""
+    result: dict = {"store": "", "last_dir": "", "floor": "", "last_update": 0, "entries": []}
     try:
         data = json.loads((folder / "session.json").read_text(encoding="utf-8"))
         result["store"] = str(data.get("store", ""))
         result["last_dir"] = str(data.get("last_dir", ""))
         floor = str(data.get("floor", ""))
         result["floor"] = floor if floor in FLOORS else ""
-        for s, e, z in data.get("entries", []):
+        result["last_update"] = max(0, int(data.get("last_update", 0)))
+        for s, e, z, *rest in data.get("entries", []):  # files from before 1.4 have no update number
             s, e = normalize_zone(s), normalize_zone(e)
             if int(s) <= int(e):
-                result["entries"].append(Entry(s, e, str(z)))
+                upd = max(0, int(rest[0])) if rest else 0
+                result["entries"].append(Entry(s, e, str(z), upd))
     except (OSError, ValueError, TypeError):  # ZoneError is a ValueError
         pass
     return result
@@ -458,11 +472,13 @@ def save_settings(folder: Path, settings: dict) -> None:
 # =============================================================================
 # Excel
 # =============================================================================
-def default_export_name(store: str, today: date | None = None) -> str:
+def default_export_name(store: str, today: date | None = None, update: int | None = None) -> str:
+    """ZoneUpdate_<store>_<date>.xlsx; an update file gets its number at the end: ..._<date>_3.xlsx."""
     safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", store or "").strip().strip(".")
     safe = re.sub(r"\s+", "_", safe)
     stamp = (today or date.today()).isoformat()
-    return "_".join(["ZoneUpdate", *([safe] if safe else []), stamp]) + ".xlsx"
+    parts = ["ZoneUpdate", *([safe] if safe else []), stamp, *([str(update)] if update else [])]
+    return "_".join(parts) + ".xlsx"
 
 
 def export_xlsx(path: str | os.PathLike, entries: Sequence[Entry]) -> None:

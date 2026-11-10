@@ -15,6 +15,7 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, ttk
+from dataclasses import replace
 from tkinter import font as tkfont
 
 import i18n
@@ -71,8 +72,10 @@ class App(tk.Tk):
         self.outdoor: set[str] = {name.casefold() for name, is_out in defs if is_out}  # never get a floor prefix
         session = zl.load_session(self.data_dir)
         self.entries: list[zl.Entry] = session["entries"]
-        self._exported: list[zl.Entry] = []  # rows as of the last Excel export (for the "not exported yet" warning)
+        self._exported: list[zl.Entry] = []  # rows written by "Export all" (so New store doesn't warn about them)
+        self._nxt: int = 1  # number the not-yet-exported rows will get (cached; see _refresh_nxt)
         self.last_dir: str = session["last_dir"]
+        self.last_update: int = session["last_update"]  # highest update number handed out in this store
         self.history: list[list[zl.Entry]] = []
         self.edit_index: int | None = None
         self._floor_before_edit: str | None = None  # the sticky floor, parked while a row is being edited
@@ -251,11 +254,12 @@ class App(tk.Tk):
         # ---- table
         wrap = ttk.Frame(main)
         wrap.pack(fill="both", expand=True, pady=(px(6), px(6)))
-        self.tree = ttk.Treeview(wrap, columns=("n", "from", "to", "zone", "count"), show="headings", selectmode="extended")
-        for key, width, anchor in (("n", 50, "center"), ("from", 110, "center"), ("to", 110, "center"), ("zone", 320, "w"), ("count", 80, "center")):
+        self.tree = ttk.Treeview(wrap, columns=("upd", "n", "from", "to", "zone", "count"), show="headings", selectmode="extended")
+        for key, width, anchor in (("upd", 100, "center"), ("n", 50, "center"), ("from", 110, "center"), ("to", 110, "center"), ("zone", 300, "w"), ("count", 80, "center")):
             self.tree.column(key, width=px(width), anchor=anchor, stretch=(key == "zone"))
         self.tree.tag_configure("odd", background="#f3f6fa", foreground="#111111")
         self.tree.tag_configure("even", background="#ffffff", foreground="#111111")
+        self.tree.tag_configure("pending", background="#e3f4e1", foreground="#111111")  # not exported yet
         self.tree.tag_configure("editing", background="#fff3c4", foreground="#111111")
         sb = ttk.Scrollbar(wrap, command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
@@ -268,9 +272,12 @@ class App(tk.Tk):
         self._reg(ttk.Button(bar, command=self.edit_selected), lambda: f"{tr('btn.edit')}  (F2)").pack(side="left")
         self._reg(ttk.Button(bar, command=self.delete_selected), lambda: f"{tr('btn.delete')}  ({tr('key.del')})").pack(side="left", padx=px(6))
         self._reg(ttk.Button(bar, command=self.undo), lambda: f"{tr('btn.undo')}  ({self.ctrl_name()}+Z)").pack(side="left")
-        self.export_btn = ttk.Button(bar, command=self.export)
-        self._reg(self.export_btn, lambda: f"{tr('btn.export')}  ({self.ctrl_name()}+S)")
+        self.export_btn = ttk.Button(bar, command=self.export_update)
+        self._reg(self.export_btn, self._export_label)
         self.export_btn.pack(side="right")
+        self.export_all_btn = ttk.Button(bar, command=self.export_all)
+        self._reg(self.export_all_btn, lambda: tr("btn.export_all"))
+        self.export_all_btn.pack(side="right", padx=(0, px(6)))
 
         # ---- status bar
         sbar = ttk.Frame(main)
@@ -280,6 +287,8 @@ class App(tk.Tk):
         ttk.Label(sbar, textvariable=self.summary, font=self.small).pack(side="right")
 
     def _bind_keys(self) -> None:
+        self.tree.bind("<Button-1>", self._tree_click)  # a click on an Update number opens the export window
+        self.tree.bind("<Motion>", self._tree_motion)
         self.tree.bind("<Double-1>", self._tree_double_click)
         self.tree.bind("<Return>", lambda _e: self.edit_selected())
         self.tree.bind("<F2>", lambda _e: self.edit_selected())
@@ -288,7 +297,7 @@ class App(tk.Tk):
         self.bind("<F2>", lambda _e: self.edit_selected())
         self.bind("<Escape>", self._on_escape)
         self.bind_all("<F1>", lambda _e: (self.help.toggle(), "break")[1])
-        for seq, fn in (("z", self.undo), ("s", self.export), ("e", self.export)):
+        for seq, fn in (("z", self.undo), ("s", self.export_update), ("e", self.export_update), ("S", self.export_all)):
             try:
                 self.bind_all(f"<{MOD}-{seq}>", lambda _e, f=fn: (f(), "break")[1])
             except tk.TclError:
@@ -319,9 +328,10 @@ class App(tk.Tk):
     def apply_language(self) -> None:
         """Re-translate everything that is on screen, including the current status line."""
         self.title(tr("app.title", version=__version__))
-        for key, name in (("n", "col.n"), ("from", "col.from"), ("to", "col.to"), ("zone", "col.zone"), ("count", "col.count")):
+        for key, name in (("upd", "col.update"), ("n", "col.n"), ("from", "col.from"), ("to", "col.to"), ("zone", "col.zone"), ("count", "col.count")):
             self.tree.heading(key, text=tr(name))
         self.lang_btn.configure(text=LANGUAGES[i18n.get_language()])
+        self._fix_export_button_width()
         self._refresh_texts()
         self.help.hide()
         self._render_status()
@@ -360,6 +370,8 @@ class App(tk.Tk):
         self.hint.set(self._hint_fn() if self._hint_fn else "")
 
     def update_summary(self) -> None:
+        pending = len(zl.pending_entries(self.entries))
+        self.export_btn.configure(text=self._export_label(), state="normal" if pending else "disabled")
         n = len(self.entries)
         if not n:
             self.summary.set(tr("summary.none"))
@@ -379,15 +391,34 @@ class App(tk.Tk):
     # Adding a row only inserts that one row (the old code rebuilt the whole table on every
     # Enter, which gets slow on an old PC with a few hundred rows). A full rebuild happens
     # only for delete / undo / import / new list.
+    def _refresh_nxt(self) -> int:
+        self._nxt = zl.next_update_number(self.entries, self.last_update)
+        return self._nxt
+
+    def next_update(self) -> int:
+        return self._refresh_nxt()
+
+    def update_of(self, i: int) -> int:
+        """The update number shown for row i: its own, or the upcoming one if it isn't exported yet."""
+        return self.entries[i].update or self._nxt
+
     def _row_tag(self, i: int) -> str:
-        return "editing" if i == self.edit_index else ("odd" if i % 2 else "even")
+        if i == self.edit_index:
+            return "editing"
+        if self.entries[i].update == 0:
+            return "pending"
+        return "odd" if i % 2 else "even"
 
     def _row_values(self, i: int) -> tuple:
         e = self.entries[i]
-        return (i + 1, e.start, e.end, e.zone, e.count)
+        n = self.update_of(i)
+        # the number is shown once per block of rows ("merged"); the cells below it stay empty
+        label = n if i == 0 or n != self.update_of(i - 1) else ""
+        return (label, i + 1, e.start, e.end, e.zone, e.count)
 
     def rebuild_table(self) -> None:
         tree = self.tree
+        self._refresh_nxt()
         tree.delete(*tree.get_children())
         for i in range(len(self.entries)):
             tree.insert("", "end", iid=str(i), values=self._row_values(i), tags=(self._row_tag(i),))
@@ -396,12 +427,14 @@ class App(tk.Tk):
         self.update_summary()
 
     def _table_append(self) -> None:
+        self._refresh_nxt()
         i = len(self.entries) - 1
         self.tree.insert("", "end", iid=str(i), values=self._row_values(i), tags=(self._row_tag(i),))
         self.tree.see(str(i))
         self.update_summary()
 
     def _table_update(self, i: int) -> None:
+        self._refresh_nxt()
         if 0 <= i < len(self.entries):
             self.tree.item(str(i), values=self._row_values(i), tags=(self._row_tag(i),))
         self.update_summary()
@@ -424,7 +457,25 @@ class App(tk.Tk):
                 self.set_hint("hint.suggest", start=nxt, prev=last.end)
         self.end.var.set("")
 
+    def _update_cell(self, e) -> str:
+        """The row under the mouse if the mouse is on an Update cell, else ''."""
+        if self.tree.identify_region(e.x, e.y) == "cell" and self.tree.identify_column(e.x) == "#1":
+            return self.tree.identify_row(e.y)
+        return ""
+
+    def _tree_motion(self, e) -> None:
+        self.tree.configure(cursor="hand2" if self._update_cell(e) else "")
+
+    def _tree_click(self, e):
+        iid = self._update_cell(e)
+        if not iid:
+            return None
+        self.export_update_dialog(self.update_of(int(iid)))
+        return "break"
+
     def _tree_double_click(self, e) -> None:
+        if self._update_cell(e):
+            return
         iid = self.tree.identify_row(e.y)
         if iid:
             self.begin_edit(int(iid))
@@ -573,12 +624,25 @@ class App(tk.Tk):
             self.info(added)
         else:
             i = self.edit_index
+            old = self.entries[i]
+            moved = False
+            if old.update:
+                if (old.start, old.end, old.zone) == (entry.start, entry.end, entry.zone):
+                    entry = replace(entry, update=old.update)  # nothing changed: it stays in its update
+                else:
+                    moved = True  # changed after it went out: it travels again, in the next update
             self.entries[i] = entry
             self.edit_index = None
             self._restore_floor()
             self._refresh_texts()
-            self._table_update(i)
-            self.info("status.updated", n=i + 1, label=entry.label())
+            if moved:
+                self.rebuild_table()  # the update blocks changed
+                self.tree.see(str(i))
+                nxt = self._nxt
+                self.info(lambda label=entry.label(), nxt=nxt: tr("status.updated", n=i + 1, label=label) + "  " + tr("status.moved_to_update", n=nxt))
+            else:
+                self._table_update(i)
+                self.info("status.updated", n=i + 1, label=entry.label())
 
         self.zone.clear()
         self.update_suggestion()
@@ -659,13 +723,15 @@ class App(tk.Tk):
     def new_list(self) -> None:
         if self.entries:
             msg = tr("dlg.new.msg", n=len(self.entries), key=f"{self.ctrl_name()}+Z")
-            if self.entries != self._exported:
+            sent = set(self._exported)
+            if any(e.update == 0 and e not in sent for e in self.entries):
                 msg += tr("dlg.new.unexported")
             if not self.ask("yesno", tr("dlg.new.title"), msg, default_yes=False):
                 return
         if self.entries:
             self._push_history()
         self.entries = []
+        self.last_update = 0  # a new store starts again at update 1
         self.edit_index = None
         self._floor_before_edit = None
         self.floor.set("")
@@ -698,32 +764,97 @@ class App(tk.Tk):
                 return str(p)
         return str(Path.home())
 
-    def export(self) -> None:
-        if not self.entries:
-            self.ask("info", tr("dlg.export.title"), tr("dlg.export.empty"))
-            return
+    # ---- exporting: every export is a file of its own
+    def _export_label(self, pending: int | None = None, n: int | None = None) -> str:
+        pending = len(zl.pending_entries(self.entries)) if pending is None else pending
+        n = self.next_update() if n is None else n
+        text = tr("btn.export_update", n=n, rows=pending) if pending else tr("btn.export_update_idle")
+        return f"{text}  ({self.ctrl_name()}+S)"
+
+    def _fix_export_button_width(self) -> None:
+        """Give the button room for its longest label so the bar doesn't jump around or clip."""
+        longest = max(len(self._export_label(0, 1)), len(self._export_label(999, 99)))
+        self.export_btn.configure(width=longest + 2)
+
+    def _write_export(self, rows: list[zl.Entry], update: int | None) -> str | None:
+        """Ask where to save, write the file. Returns the path, or None if cancelled / it failed."""
         path = filedialog.asksaveasfilename(
             parent=self,
             title=tr("dlg.export.save_title"),
             defaultextension=".xlsx",
             filetypes=[(tr("dlg.filetype.xlsx"), "*.xlsx")],
             initialdir=self._initial_dir(),
-            initialfile=zl.default_export_name(self.store.get()),
+            initialfile=zl.default_export_name(self.store.get(), update=update),
         )
         if not path:
-            return
+            return None
         try:
-            zl.export_xlsx(path, self.entries)
+            zl.export_xlsx(path, rows)
         except PermissionError:
             self.ask("error", tr("dlg.cantsave.title"), tr("dlg.cantsave.msg", file=os.path.basename(path)))
-            return
+            return None
         except OSError as exc:
             self.ask("error", tr("dlg.cantsave.title"), str(exc))
-            return
+            return None
         self.last_dir = os.path.dirname(path)
+        return path
+
+    def export_update(self) -> None:
+        """Export the rows added since the last export, as the next numbered update (Ctrl+S)."""
+        if not self.entries:
+            self.ask("info", tr("dlg.export.title"), tr("dlg.export.empty"))
+            return
+        if not zl.pending_entries(self.entries):
+            self.ask("info", tr("dlg.export.title"), tr("dlg.export.nothing_new", n=self.next_update() - 1))
+            return
+        self._export_pending()
+
+    def _export_pending(self) -> None:
+        rows = zl.pending_entries(self.entries)
+        n = self.next_update()
+        path = self._write_export(rows, n)
+        if path is None:
+            return
+        self.entries = [replace(e, update=n) if e.update == 0 else e for e in self.entries]
+        self.last_update = n
+        self.history.clear()  # undo can't reach back across an export: those rows are out now
+        self.rebuild_table()
+        self.flush_session()
+        self.info("status.exported_update", n=n, rows=len(rows), path=path)
+
+    def export_all(self) -> None:
+        """Every row in one file, named without an update number. Does not change any update (Ctrl+Shift+S)."""
+        if not self.entries:
+            self.ask("info", tr("dlg.export.title"), tr("dlg.export.empty"))
+            return
+        path = self._write_export(list(self.entries), None)
+        if path is None:
+            return
         self._exported = list(self.entries)
         self.flush_session()
         self.info("status.exported", n=len(self.entries), path=path)
+
+    def export_update_dialog(self, n: int) -> None:
+        """Clicked on an Update number: offer to export exactly that update."""
+        self._refresh_nxt()
+        rows = [e for i, e in enumerate(self.entries) if self.update_of(i) == n]
+        if not rows:
+            return
+        lo, hi = zl.pad(min(e.first for e in rows)), zl.pad(max(e.last for e in rows))
+        is_new = n == self._nxt
+        msg = tr("dlg.upd.msg_open" if is_new else "dlg.upd.msg_done", n=n, rows=len(rows), lo=lo, hi=hi, next=n + 1)
+        go = self.ask_choice(
+            tr("dlg.upd.title", n=n), msg, [(tr("dlg.upd.btn"), True), (tr("dlg.cancel"), False)], default=0, cancel=False
+        )
+        if not go:
+            return
+        if is_new:
+            self._export_pending()
+            return
+        path = self._write_export(rows, n)  # an earlier update again: a fresh copy, nothing else changes
+        if path is not None:
+            self.flush_session()
+            self.info("status.exported_update", n=n, rows=len(rows), path=path)
 
     def import_file(self) -> None:
         path = filedialog.askopenfilename(
@@ -764,7 +895,8 @@ class App(tk.Tk):
             self._save_zone_defs()
         self._push_history()
         self.cancel_edit()
-        self.entries = entries
+        self.entries = [replace(e, update=1) for e in entries]  # a file you import was sent already
+        self.last_update = 1
         self.rebuild_table()
         self.update_suggestion()
 
@@ -776,6 +908,7 @@ class App(tk.Tk):
                 parts.append(tr("status.imported_new", n=n_new))
             if n_bad:
                 parts.append(tr("status.imported_skipped", n=n_bad))
+            parts.append(tr("status.imported_as_sent"))
             return " ".join(parts)
 
         if problems:
@@ -798,7 +931,7 @@ class App(tk.Tk):
                 pass
             self._save_job = None
         try:
-            zl.save_session(self.data_dir, self.store.get(), self.entries, self.last_dir, self.sticky_floor())
+            zl.save_session(self.data_dir, self.store.get(), self.entries, self.last_dir, self.sticky_floor(), self.next_update() - 1)
         except OSError:
             pass  # never interrupt data entry because autosave failed
 
