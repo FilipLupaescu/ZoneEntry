@@ -296,7 +296,8 @@ def app_data_dir() -> Path:
     return p
 
 
-FLOORS = ("EG", "OG")  # the floor prefixes the selector offers (none = no prefix)
+FLOORS = ("EG", "OG", "HZ")  # the prefixes the selector offers (none = no prefix)
+EVERYWHERE = ("HZ",)  # HZ = Hochzone (the zone on top of the shelves): applies to outdoor zones too
 OUTDOOR_MARK = "*"  # in zones.txt: "*Garten" = outdoor zone, never gets a floor prefix
 ZONES_FORMAT_LINE = "# zoneentry-format: 2"
 ZONES_HEADER = (
@@ -406,7 +407,9 @@ def split_floor(division: str) -> tuple[str, str]:
 
 def with_floor(floor: str, zone: str, outdoor: bool) -> str:
     """The text for the Division column: 'EG Sanitär', or just the zone if no floor / outdoor zone."""
-    return f"{floor} {zone}" if floor in FLOORS and not outdoor else zone
+    if floor not in FLOORS or (outdoor and floor not in EVERYWHERE):
+        return zone
+    return f"{floor} {zone}"
 
 
 def tidy_new_zone_name(text: str) -> str:

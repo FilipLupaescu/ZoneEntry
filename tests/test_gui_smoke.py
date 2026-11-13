@@ -758,7 +758,7 @@ def test_floor_selector_labels_and_buttons_in_every_language(app):
     for code in i18n.LANGUAGES:
         app.set_language(code)
         app.update()
-        assert [b.cget("text") for b in app.floor_buttons.values()] == ["–", "EG", "OG"]
+        assert [b.cget("text") for b in app.floor_buttons.values()] == ["–", "EG", "OG", "HZ"]
         assert app.winfo_reqwidth() <= app.winfo_screenwidth()
 
 
@@ -1067,3 +1067,24 @@ def test_update_column_and_buttons_exist_in_every_language_and_fit(app):
         assert app.export_btn.winfo_ismapped() and app.export_all_btn.winfo_ismapped()
         assert app.export_all_btn.winfo_rootx() + app.export_all_btn.winfo_width() <= app.export_btn.winfo_rootx() + 2
         assert app.winfo_reqwidth() <= app.winfo_screenwidth()
+
+
+def test_hz_goes_on_every_zone_outdoor_ones_too(app):
+    press(app.zone, "Control-Key-3")
+    assert app.floor.get() == "HZ" and tr("status.floor_everywhere", floor="HZ") == app.status.get()
+    add_row(app, "san", "10", start="1")
+    add_row(app, "garten", "20")  # outdoor, still gets HZ
+    add_row(app, "aussenbereich", "30")
+    app.set_floor("OG")
+    add_row(app, "garten", "40")  # but OG still skips outdoor zones
+    assert [e.zone for e in app.entries] == ["HZ Sanitär", "HZ Garten", "HZ Außenbereich", "Garten"]
+
+
+def test_editing_an_hz_row_shows_hz_and_the_prefix_is_not_part_of_the_zone(app):
+    app.set_floor("HZ")
+    add_row(app, "garten", "10", start="1")
+    app.set_floor("")
+    app.begin_edit(0)
+    assert app.floor.get() == "HZ" and app.zone.var.get() == "Garten"
+    app.cancel_edit()
+    assert app.floor.get() == ""

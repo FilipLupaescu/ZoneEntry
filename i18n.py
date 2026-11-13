@@ -58,6 +58,13 @@ STRINGS: dict[str, dict[str, str]] = {
         "Piętro {floor}: nowe wiersze zaczynają się od „{floor} ” (strefy zewnętrzne nie mają piętra).",
         "Etage {floor}: Neue Zeilen beginnen mit „{floor} “ (Außenzonen bekommen keine Etage).",
     ),
+    "status.floor_everywhere": _t(
+        "{floor}: new rows start with “{floor} ” – on all zones, outdoor zones too.",
+        "{floor}: rândurile noi încep cu „{floor} ” – la toate zonele, și la cele exterioare.",
+        "{floor}: az új sorok eleje „{floor} ” lesz – minden zónánál, a külső zónáknál is.",
+        "{floor}: nowe wiersze zaczynają się od „{floor} ” – we wszystkich strefach, także zewnętrznych.",
+        "{floor}: Neue Zeilen beginnen mit „{floor} “ – bei allen Zonen, auch bei Außenzonen.",
+    ),
     "status.floor_none": _t(
         "No floor: new rows are saved without a prefix.",
         "Fără etaj: rândurile noi se salvează fără prefix.",
@@ -581,11 +588,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "Markierte Zeilen löschen",
     ),
     "hk.floor": _t(
-        "Floor for new rows: EG / OG / none",
-        "Etaj pentru rândurile noi: EG / OG / fără",
-        "Szint az új sorokhoz: EG / OG / nincs",
-        "Piętro dla nowych wierszy: EG / OG / brak",
-        "Etage für neue Zeilen: EG / OG / keine",
+        "Level for new rows: EG / OG / HZ / none",
+        "Nivel pentru rândurile noi: EG / OG / HZ / fără",
+        "Szint az új sorokhoz: EG / OG / HZ / nincs",
+        "Poziom dla nowych wierszy: EG / OG / HZ / brak",
+        "Ebene für neue Zeilen: EG / OG / HZ / keine",
     ),
     "hk.undo": _t("Undo", "Anulare", "Visszavonás", "Cofnij", "Rückgängig"),
     "hk.export": _t(

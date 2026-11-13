@@ -223,7 +223,11 @@ def test_expand_braces_and_parse_zone_defs():
 
 
 def test_floor_helpers():
-    assert zl.FLOORS == ("EG", "OG")
+    assert zl.FLOORS == ("EG", "OG", "HZ")
+    assert zl.with_floor("HZ", "Garten", True) == "HZ Garten"  # HZ goes on outdoor zones too
+    assert zl.with_floor("HZ", "Sanitär", False) == "HZ Sanitär"
+    assert zl.with_floor("EG", "Außenbereich", True) == "Außenbereich"
+    assert zl.split_floor("HZ Garten") == ("HZ", "Garten")
     assert zl.with_floor("OG", "Sanitär", False) == "OG Sanitär"
     assert zl.with_floor("OG", "Garten", True) == "Garten"
     assert zl.with_floor("", "Sanitär", False) == "Sanitär"

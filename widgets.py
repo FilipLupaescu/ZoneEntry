@@ -471,7 +471,7 @@ class HelpPopup:
             ("Esc", "hk.esc"),
             ("F2", "hk.f2"),
             (tr("key.del"), "hk.del"),
-            (f"{ctrl}+1  /  {ctrl}+2  /  {ctrl}+0", "hk.floor"),
+            (f"{ctrl}+1 / 2 / 3 / 0", "hk.floor"),
             (f"{ctrl}+Z", "hk.undo"),
             (f"{ctrl}+S", "hk.export"),
             (f"{ctrl}+Shift+S", "hk.export_all"),

@@ -75,6 +75,7 @@ So a typical row is just: `kas` ⏎ `42` ⏎
 
 Some stores have an upper floor. The **Floor** buttons next to Store Zone are **EG**, **OG** and **–** (no floor).
 Pick one and it stays selected, so you can count a whole floor without touching it again. New rows get the floor in front of the zone name, exactly like this in the Excel file: `EG Sanitär`, `OG Deko`.
+HZ (Hochzone, the top of the shelves) is added to all zones, outdoor zones too.
 
 * Single-floor store? Leave it on **–**, nothing is added.
 * Switch with **Ctrl+1** (EG), **Ctrl+2** (OG) or **Ctrl+0** (none), or click the button.

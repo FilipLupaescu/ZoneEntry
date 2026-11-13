@@ -213,11 +213,11 @@ class App(tk.Tk):
         self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.start")).grid(row=0, column=2, sticky="w", padx=(px(16), 0))
         self._reg(ttk.Label(box, font=self.bold), lambda: tr("lbl.end")).grid(row=0, column=3, sticky="w", padx=(px(16), 0))
 
-        # floor selector: "–" (none) / EG / OG. Sticky; skipped by Tab; hotkeys Ctrl+0 / Ctrl+1 / Ctrl+2
+        # floor selector: "–" (none) / EG / OG / HZ. Sticky; skipped by Tab; hotkeys Ctrl+0 / 1 / 2 / 3
         floor_box = tk.Frame(box)
         floor_box.grid(row=1, column=0, sticky="w", pady=(2, 0))
         self.floor_buttons: dict[str, tk.Radiobutton] = {}
-        for value, text in (("", "–"), ("EG", "EG"), ("OG", "OG")):
+        for value, text in (("", "–"), ("EG", "EG"), ("OG", "OG"), ("HZ", "HZ")):
             rb = tk.Radiobutton(
                 floor_box, text=text, value=value, variable=self.floor, indicatoron=False, width=4,
                 font=self.bold, selectcolor="#9cc5f2", activebackground="#dbe9fa", takefocus=False,
@@ -302,7 +302,7 @@ class App(tk.Tk):
                 self.bind_all(f"<{MOD}-{seq}>", lambda _e, f=fn: (f(), "break")[1])
             except tk.TclError:
                 pass
-        for digit, value in (("0", ""), ("1", "EG"), ("2", "OG")):  # "Key-" matters: <Control-1> alone means mouse button 1
+        for digit, value in (("0", ""), ("1", "EG"), ("2", "OG"), ("3", "HZ")):  # "Key-" matters: <Control-1> alone means mouse button 1
             try:
                 self.bind_all(f"<{MOD}-Key-{digit}>", lambda _e, v=value: (self.set_floor(v), "break")[1])
             except tk.TclError:
@@ -507,7 +507,10 @@ class App(tk.Tk):
 
     def _announce_floor(self) -> None:
         floor = self.floor.get()
-        self.info("status.floor", floor=floor) if floor else self.info("status.floor_none")
+        if not floor:
+            self.info("status.floor_none")
+        else:
+            self.info("status.floor_everywhere" if floor in zl.EVERYWHERE else "status.floor", floor=floor)
 
     def _restore_floor(self) -> None:
         if self._floor_before_edit is not None:
